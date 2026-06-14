@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Proxy · Clash · JSON Converter</title>
     <link rel="icon" href="data:,">
-    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4/dist/js-yaml.min.js"></script>
     <style>
         *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
         html { font-size: 16px; }
@@ -264,6 +263,26 @@
         }
         @media (max-width:540px) { .glass { padding:24px 16px; } .btn-row { flex-direction:column; } }
     </style>
+    <script>
+        // Загрузка js-yaml с резервными вариантами
+        (function loadYaml() {
+            if (typeof jsyaml !== 'undefined') return;
+            var script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/js-yaml@4/dist/js-yaml.min.js';
+            script.onload = function() { console.log('js-yaml loaded from cdn'); };
+            script.onerror = function() {
+                var fallback = document.createElement('script');
+                fallback.src = 'https://unpkg.com/js-yaml@4/dist/js-yaml.min.js';
+                fallback.onload = function() { console.log('js-yaml loaded from unpkg'); };
+                fallback.onerror = function() {
+                    document.body.innerHTML = '<div style="color:red; text-align:center; margin-top:50px;">❌ Failed to load YAML library. Please check your internet connection and disable any ad blockers, then <a href="#" onclick="location.reload()">reload the page</a>.</div>';
+                };
+                document.head.appendChild(fallback);
+            };
+            document.head.appendChild(script);
+        })();
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/js-yaml@4/dist/js-yaml.min.js" onerror="this.onerror=null; console.warn('Primary CDN failed, fallback will handle')"></script>
 </head>
 <body>
 
@@ -374,790 +393,805 @@
 <div id="toastMsg" class="toast">Copied!</div>
 
 <script>
-    // ---------- Helper functions ----------
-    function showToast(msg) {
-        const t = document.getElementById('toastMsg');
-        t.textContent = msg;
-        t.classList.add('show');
-        setTimeout(() => t.classList.remove('show'), 2000);
-    }
-
-    async function copyText(text) {
-        try {
-            await navigator.clipboard.writeText(text);
-            showToast('Copied!');
-        } catch (err) {
-            console.error('Clipboard failed:', err);
-            showToast('Unable to copy automatically. Please copy manually.');
+    // Дожидаемся загрузки jsyaml
+    let yamlReady = false;
+    function waitForYaml(cb) {
+        if (typeof jsyaml !== 'undefined') {
+            yamlReady = true;
+            cb();
+        } else {
+            setTimeout(function() { waitForYaml(cb); }, 50);
         }
     }
 
-    function safeNewURL(url) {
-        try {
-            return new URL(url);
-        } catch {
+    // Основной код запускаем после загрузки библиотеки
+    waitForYaml(function() {
+        console.log('YAML library ready, initializing app');
+        initApp();
+    });
+
+    function initApp() {
+        // ---------- Helper functions ----------
+        function showToast(msg) {
+            const t = document.getElementById('toastMsg');
+            t.textContent = msg;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 2000);
+        }
+
+        async function copyText(text) {
             try {
-                return new URL(url.replace(/%([^0-9A-Fa-f])/g, '%25$1'));
+                await navigator.clipboard.writeText(text);
+                showToast('Copied!');
+            } catch (err) {
+                console.error('Clipboard failed:', err);
+                showToast('Unable to copy automatically. Please copy manually.');
+            }
+        }
+
+        function safeNewURL(url) {
+            try {
+                return new URL(url);
             } catch {
-                return null;
+                try {
+                    return new URL(url.replace(/%([^0-9A-Fa-f])/g, '%25$1'));
+                } catch {
+                    return null;
+                }
             }
         }
-    }
 
-    function safeAtob(str) {
-        try {
-            const clean = str.trim().replace(/-/g, '+').replace(/_/g, '/');
-            const padded = clean.padEnd(clean.length + (4 - clean.length % 4) % 4, '=');
-            return atob(padded);
-        } catch {
-            return '';
-        }
-    }
-
-    // Удаление BOM из строки
-    function stripBOM(str) {
-        if (str.charCodeAt(0) === 0xFEFF) {
-            return str.slice(1);
-        }
-        return str;
-    }
-
-    // ======================== JSON ↔ PROXY CONVERSION ========================
-    function extractAllJSON(text) {
-        const res = [];
-        let i = 0, inString = false, stringDelim = '', braceDepth = 0, start = -1;
-        for (; i < text.length; i++) {
-            const ch = text[i];
-            if (!inString) {
-                if (ch === '{') {
-                    if (braceDepth === 0) start = i;
-                    braceDepth++;
-                } else if (ch === '}') {
-                    braceDepth--;
-                    if (braceDepth === 0 && start !== -1) {
-                        try { res.push(JSON.parse(text.slice(start, i+1))); } catch(e) {}
-                        start = -1;
-                    }
-                } else if (ch === '"' || ch === "'") { inString = true; stringDelim = ch; }
-            } else {
-                if (ch === stringDelim && text[i-1] !== '\\') { inString = false; }
-            }
-        }
-        return res;
-    }
-
-    function decodeVmessBase64(line) {
-        try {
-            const b64 = line.replace(/^vmess:\/\//, '').trim();
-            const raw = safeAtob(b64);
-            if (!raw) return line;
-            let str; try { str = decodeURIComponent(escape(raw)); } catch { str = raw; }
-            const json = JSON.parse(str);
-            const params = new URLSearchParams();
-            if (json.security) params.set('security', json.security);
-            if (json.net) params.set('type', json.net);
-            if (json.host) params.set('host', json.host);
-            if (json.path) params.set('path', json.path);
-            if (json.sni) params.set('sni', json.sni);
-            if (json.fp) params.set('fp', json.fp);
-            if (json.flow) params.set('flow', json.flow);
-            if (json.serviceName) params.set('serviceName', json.serviceName);
-            return `vmess://${json.id}@${json.add}:${json.port}${params.toString() ? '?'+params.toString() : ''}#${json.ps || ''}`;
-        } catch { return line; }
-    }
-
-    function parseWireguardURL(l) {
-        try {
-            const u = safeNewURL(l);
-            if (!u) return null;
-            const params = u.searchParams;
-            return { 
-                protocol: 'wireguard', 
-                tag: u.hash ? decodeURIComponent(u.hash.slice(1)) : 'wireguard', 
-                settings: { 
-                    address: [params.get('address') || ''], 
-                    mtu: parseInt(params.get('mtu'), 10) || 1420, 
-                    secretKey: decodeURIComponent(u.username), 
-                    peers: [{ endpoint: u.host, keepAlive: 25, preSharedKey: params.get('presharedkey') || '', publicKey: params.get('publickey') || '' }] 
-                } 
-            };
-        } catch { return null; }
-    }
-
-    function buildURLFromOutbound(o, remarks, urls) {
-        try {
-            const proto = o.protocol;
-            const tag = encodeURIComponent(remarks || o.tag || proto);
-            const p = new URLSearchParams();
-            let base = '';
-            if (proto === 'shadowsocks') { 
-                (o.settings?.servers || []).forEach(s => { 
-                    const a = btoa(`${s.method}:${s.password}`).replace(/=+$/, ''); 
-                    urls.push(`ss://${a}@${s.address}:${s.port}#${tag}`); 
-                }); 
-                return; 
-            }
-            if (proto === 'vmess' || proto === 'vless') {
-                const v = o.settings?.vnext?.[0];
-                const u = v?.users?.[0];
-                if (v && u) { base = `${proto}://${u.id}@${v.address}:${v.port}`; p.set('encryption', u.encryption || (proto === 'vmess' ? 'auto' : 'none')); if (u.flow) p.set('flow', u.flow); }
-            }
-            if (proto === 'trojan') { const s = o.settings?.servers?.[0]; if (s) base = `trojan://${encodeURIComponent(s.password)}@${s.address}:${s.port}`; }
-            if (proto === 'wireguard') {
-                const s = o.settings, peer = s?.peers?.[0];
-                if (s && peer) { 
-                    const wurl = safeNewURL(`wireguard://${peer.endpoint}`); 
-                    if (!wurl) return;
-                    wurl.username = s.secretKey; 
-                    if (s.address?.[0]) wurl.searchParams.set('address', s.address[0]); 
-                    if (peer.preSharedKey) wurl.searchParams.set('presharedkey', peer.preSharedKey); 
-                    if (peer.publicKey) wurl.searchParams.set('publickey', peer.publicKey); 
-                    wurl.searchParams.set('mtu', s.mtu || 1420); 
-                    urls.push(wurl.toString() + '#' + tag); 
-                } 
-                return;
-            }
-            if (proto === 'hysteria2') {
-                const srv = o.settings?.servers?.[0];
-                const hy = o.streamSettings?.hy2Settings;
-                if (srv && hy) base = `hysteria2://${encodeURIComponent(hy.password)}@${srv.address}:${srv.port}`;
-                if (o.streamSettings?.tlsSettings?.allowInsecure) p.set('insecure', '1');
-                if (o.streamSettings?.tlsSettings?.serverName) p.set('sni', o.streamSettings.tlsSettings.serverName);
-            }
-            if (!base) return;
-            const st = o.streamSettings || {};
-            const tls = st.tlsSettings || {};
-            if (st.security) p.set('security', st.security);
-            if (tls.allowInsecure) p.set('allowInsecure', '1');
-            if (tls.serverName) p.set('sni', tls.serverName);
-            if (tls.fingerprint) p.set('fp', tls.fingerprint);
-            if (st.realitySettings?.publicKey) p.set('pbk', st.realitySettings.publicKey);
-            if (st.realitySettings?.shortId) p.set('sid', st.realitySettings.shortId);
-            if (st.grpcSettings?.serviceName) p.set('serviceName', st.grpcSettings.serviceName);
-            let net = st.network || '';
-            if (!net) { if (st.wsSettings) net = 'ws'; else if (st.httpupgradeSettings) net = 'httpupgrade'; else net = 'tcp'; }
-            p.set('type', net);
-            let host = '', path = '';
-            if (net === 'ws' && st.wsSettings) { host = st.wsSettings.headers?.Host || ''; path = st.wsSettings.path || ''; }
-            if (host) p.set('host', host);
-            if (path) p.set('path', path);
-            urls.push(`${base}?${p.toString()}#${tag}`);
-        } catch {}
-    }
-
-    function jsonToUrls(rawText) {
-        const objs = extractAllJSON(rawText), urls = [];
-        for (const obj of objs) {
-            if (obj.outbounds && Array.isArray(obj.outbounds)) { obj.outbounds.forEach(o => { buildURLFromOutbound(o, obj.remarks || o.tag, urls); }); continue; }
-            if (obj.outboundBean) buildURLFromOutbound(obj.outboundBean, obj.remarks, urls);
-            else if (obj.custom_json?.outbounds) obj.custom_json.outbounds.forEach(o => buildURLFromOutbound(o, obj.remarks, urls));
-            else if (obj.configType === 'VLESS' && obj.password && obj.server) {
-                const p = new URLSearchParams(); p.set('encryption', obj.method || 'none'); if (obj.network) p.set('type', obj.network); if (obj.host) p.set('host', obj.host); if (obj.path) p.set('path', obj.path); if (obj.sni) p.set('sni', obj.sni);
-                urls.push(`vless://${obj.password}@${obj.server}:${obj.serverPort}?${p.toString()}#${encodeURIComponent(obj.remarks||'')}`);
-            }
-            else if (obj.configType === 'SHADOWSOCKS' && obj.method && obj.password && obj.server && obj.serverPort) {
-                const a = btoa(`${obj.method}:${obj.password}`).replace(/=+$/, ''); urls.push(`ss://${a}@${obj.server}:${obj.serverPort}#${encodeURIComponent(obj.remarks||'')}`);
-            }
-        }
-        const lines = rawText.split(/\r?\n/);
-        for (let l of lines) {
-            l = l.trim();
-            if (l.startsWith('vmess://')) l = decodeVmessBase64(l);
-            if (l.startsWith('wireguard://')) {
-                const wg = parseWireguardURL(l);
-                if (wg) buildURLFromOutbound(wg, wg.tag, urls);
-                continue;
-            }
-            if (l.match(/^(vless|vmess|ss|ssr|trojan|hysteria2|wireguard):\/\//)) urls.push(l);
-        }
-        return [...new Set(urls)].join('\n');
-    }
-
-    function urlsToJson(rawText) {
-        const lines = rawText.split(/\r?\n/).filter(l => l.trim());
-        const outbounds = [];
-        for (let line of lines) {
-            line = line.trim();
-            if (line.startsWith('vmess://')) line = decodeVmessBase64(line);
-            if (line.startsWith('wireguard://')) { const wg = parseWireguardURL(line); if (wg) outbounds.push(wg); continue; }
+        function safeAtob(str) {
             try {
-                const u = safeNewURL(line);
-                if (!u) continue;
-                const proto = u.protocol.slice(0, -1);
-                const tag = u.hash ? decodeURIComponent(u.hash.slice(1)) : proto;
-                const p = u.searchParams;
-                const typeParam = p.get('type') || 'tcp';
-                const hostVal = p.get('host') || '';
-                const pathVal = p.get('path') || '';
-                const flow = p.get('flow') || '';
-                const sni = p.get('sni') || '';
-                const fp = p.get('fp') || '';
-                const pbk = p.get('pbk') || '';
-                const sid = p.get('sid') || '';
-                const serviceName = p.get('serviceName') || '';
-                const allowInsecure = p.get('allowInsecure') === '1';
-                const ssConf = {
-                    network: typeParam === 'xhttp' ? 'splithttp' : typeParam,
-                    security: p.get('security') || 'none',
-                    tlsSettings: { serverName: sni, allowInsecure, fingerprint: fp, alpn: p.get('alpn') ? p.get('alpn').split(',') : [] },
-                    realitySettings: { publicKey: pbk, shortId: sid, serverName: sni },
-                    wsSettings: typeParam === 'ws' && hostVal ? { headers: { Host: hostVal }, path: pathVal } : undefined,
-                    httpupgradeSettings: typeParam === 'httpupgrade' ? { host: hostVal, path: pathVal } : undefined,
-                    splithttpSettings: typeParam === 'splithttp' ? { host: hostVal, path: pathVal } : undefined,
-                    grpcSettings: serviceName ? { serviceName } : undefined
+                const clean = str.trim().replace(/-/g, '+').replace(/_/g, '/');
+                const padded = clean.padEnd(clean.length + (4 - clean.length % 4) % 4, '=');
+                return atob(padded);
+            } catch {
+                return '';
+            }
+        }
+
+        function stripBOM(str) {
+            if (str.charCodeAt(0) === 0xFEFF) return str.slice(1);
+            return str;
+        }
+
+        // ======================== JSON ↔ PROXY CONVERSION ========================
+        function extractAllJSON(text) {
+            const res = [];
+            let i = 0, inString = false, stringDelim = '', braceDepth = 0, start = -1;
+            for (; i < text.length; i++) {
+                const ch = text[i];
+                if (!inString) {
+                    if (ch === '{') {
+                        if (braceDepth === 0) start = i;
+                        braceDepth++;
+                    } else if (ch === '}') {
+                        braceDepth--;
+                        if (braceDepth === 0 && start !== -1) {
+                            try { res.push(JSON.parse(text.slice(start, i+1))); } catch(e) {}
+                            start = -1;
+                        }
+                    } else if (ch === '"' || ch === "'") { inString = true; stringDelim = ch; }
+                } else {
+                    if (ch === stringDelim && text[i-1] !== '\\') { inString = false; }
+                }
+            }
+            return res;
+        }
+
+        function decodeVmessBase64(line) {
+            try {
+                const b64 = line.replace(/^vmess:\/\//, '').trim();
+                const raw = safeAtob(b64);
+                if (!raw) return line;
+                let str; try { str = decodeURIComponent(escape(raw)); } catch { str = raw; }
+                const json = JSON.parse(str);
+                const params = new URLSearchParams();
+                if (json.security) params.set('security', json.security);
+                if (json.net) params.set('type', json.net);
+                if (json.host) params.set('host', json.host);
+                if (json.path) params.set('path', json.path);
+                if (json.sni) params.set('sni', json.sni);
+                if (json.fp) params.set('fp', json.fp);
+                if (json.flow) params.set('flow', json.flow);
+                if (json.serviceName) params.set('serviceName', json.serviceName);
+                return `vmess://${json.id}@${json.add}:${json.port}${params.toString() ? '?'+params.toString() : ''}#${json.ps || ''}`;
+            } catch { return line; }
+        }
+
+        function parseWireguardURL(l) {
+            try {
+                const u = safeNewURL(l);
+                if (!u) return null;
+                const params = u.searchParams;
+                return { 
+                    protocol: 'wireguard', 
+                    tag: u.hash ? decodeURIComponent(u.hash.slice(1)) : 'wireguard', 
+                    settings: { 
+                        address: [params.get('address') || ''], 
+                        mtu: parseInt(params.get('mtu'), 10) || 1420, 
+                        secretKey: decodeURIComponent(u.username), 
+                        peers: [{ endpoint: u.host, keepAlive: 25, preSharedKey: params.get('presharedkey') || '', publicKey: params.get('publickey') || '' }] 
+                    } 
                 };
-                if (proto === 'vless') outbounds.push({ protocol: 'vless', tag, settings: { vnext: [{ address: u.hostname, port: +u.port || 443, users: [{ id: u.username, encryption: p.get('encryption') || 'none', flow }] }] }, streamSettings: ssConf });
-                if (proto === 'vmess') outbounds.push({ protocol: 'vmess', tag, settings: { vnext: [{ address: u.hostname, port: +u.port || 443, users: [{ id: u.username, security: p.get('encryption') || 'auto' }] }] }, streamSettings: ssConf });
-                if (proto === 'trojan') outbounds.push({ protocol: 'trojan', tag, settings: { servers: [{ address: u.hostname, port: +u.port || 443, password: decodeURIComponent(u.username) }] }, streamSettings: ssConf });
-                if (proto === 'ss') {
-                    let body = line.slice(5);
-                    let tagSs = '';
-                    if (body.includes('#')) {
-                        const parts = body.split('#');
-                        body = parts[0];
-                        tagSs = decodeURIComponent(parts[1]);
-                    }
-                    let authPart, rest;
-                    if (body.includes('@')) {
-                        [authPart, rest] = body.split('@');
-                    } else {
-                        const decoded = safeAtob(body);
-                        if (!decoded || !decoded.includes('@')) continue;
-                        [authPart, rest] = decoded.split('@');
-                    }
-                    const decodedAuth = safeAtob(authPart);
-                    if (!decodedAuth || !decodedAuth.includes(':')) continue;
-                    const [method, password] = decodedAuth.split(':');
-                    let address, port;
-                    const lastColonIndex = rest.lastIndexOf(':');
-                    if (lastColonIndex !== -1) {
-                        address = rest.substring(0, lastColonIndex);
-                        port = parseInt(rest.substring(lastColonIndex + 1), 10);
-                    } else {
-                        address = rest;
-                        port = null;
-                    }
-                    const finalPort = port && !isNaN(port) ? port : 1080;
-                    outbounds.push({
-                        protocol: 'shadowsocks',
-                        tag: tagSs || 'ss',
-                        settings: { servers: [{ address, port: finalPort, method, password }] },
-                        streamSettings: { network: 'tcp' }
-                    });
-                    continue;
+            } catch { return null; }
+        }
+
+        function buildURLFromOutbound(o, remarks, urls) {
+            try {
+                const proto = o.protocol;
+                const tag = encodeURIComponent(remarks || o.tag || proto);
+                const p = new URLSearchParams();
+                let base = '';
+                if (proto === 'shadowsocks') { 
+                    (o.settings?.servers || []).forEach(s => { 
+                        const a = btoa(`${s.method}:${s.password}`).replace(/=+$/, ''); 
+                        urls.push(`ss://${a}@${s.address}:${s.port}#${tag}`); 
+                    }); 
+                    return; 
+                }
+                if (proto === 'vmess' || proto === 'vless') {
+                    const v = o.settings?.vnext?.[0];
+                    const u = v?.users?.[0];
+                    if (v && u) { base = `${proto}://${u.id}@${v.address}:${v.port}`; p.set('encryption', u.encryption || (proto === 'vmess' ? 'auto' : 'none')); if (u.flow) p.set('flow', u.flow); }
+                }
+                if (proto === 'trojan') { const s = o.settings?.servers?.[0]; if (s) base = `trojan://${encodeURIComponent(s.password)}@${s.address}:${s.port}`; }
+                if (proto === 'wireguard') {
+                    const s = o.settings, peer = s?.peers?.[0];
+                    if (s && peer) { 
+                        const wurl = safeNewURL(`wireguard://${peer.endpoint}`); 
+                        if (!wurl) return;
+                        wurl.username = s.secretKey; 
+                        if (s.address?.[0]) wurl.searchParams.set('address', s.address[0]); 
+                        if (peer.preSharedKey) wurl.searchParams.set('presharedkey', peer.preSharedKey); 
+                        if (peer.publicKey) wurl.searchParams.set('publickey', peer.publicKey); 
+                        wurl.searchParams.set('mtu', s.mtu || 1420); 
+                        urls.push(wurl.toString() + '#' + tag); 
+                    } 
+                    return;
                 }
                 if (proto === 'hysteria2') {
-                    const password = decodeURIComponent(u.username);
-                    const [host, port] = u.host.split(':');
-                    outbounds.push({ protocol: 'hysteria2', tag, settings: { servers: [{ address: host, port: parseInt(port,10) || 443 }] }, streamSettings: { network: 'hysteria2', security: 'tls', hy2Settings: { password }, tlsSettings: { allowInsecure, serverName: sni } } });
+                    const srv = o.settings?.servers?.[0];
+                    const hy = o.streamSettings?.hy2Settings;
+                    if (srv && hy) base = `hysteria2://${encodeURIComponent(hy.password)}@${srv.address}:${srv.port}`;
+                    if (o.streamSettings?.tlsSettings?.allowInsecure) p.set('insecure', '1');
+                    if (o.streamSettings?.tlsSettings?.serverName) p.set('sni', o.streamSettings.tlsSettings.serverName);
                 }
+                if (!base) return;
+                const st = o.streamSettings || {};
+                const tls = st.tlsSettings || {};
+                if (st.security) p.set('security', st.security);
+                if (tls.allowInsecure) p.set('allowInsecure', '1');
+                if (tls.serverName) p.set('sni', tls.serverName);
+                if (tls.fingerprint) p.set('fp', tls.fingerprint);
+                if (st.realitySettings?.publicKey) p.set('pbk', st.realitySettings.publicKey);
+                if (st.realitySettings?.shortId) p.set('sid', st.realitySettings.shortId);
+                if (st.grpcSettings?.serviceName) p.set('serviceName', st.grpcSettings.serviceName);
+                let net = st.network || '';
+                if (!net) { if (st.wsSettings) net = 'ws'; else if (st.httpupgradeSettings) net = 'httpupgrade'; else net = 'tcp'; }
+                p.set('type', net);
+                let host = '', path = '';
+                if (net === 'ws' && st.wsSettings) { host = st.wsSettings.headers?.Host || ''; path = st.wsSettings.path || ''; }
+                if (host) p.set('host', host);
+                if (path) p.set('path', path);
+                urls.push(`${base}?${p.toString()}#${tag}`);
             } catch {}
         }
-        const fullConfig = {
-            dns: { servers: [{ address: '8.8.8.8' }] },
-            inbounds: [{ listen: '0.0.0.0', port: 1080, protocol: 'socks', settings: { auth: 'noauth', udp: true } }],
-            log: { loglevel: 'warning' },
-            outbounds: outbounds,
-            routing: { domainStrategy: 'AsIs', rules: [] }
-        };
-        return JSON.stringify(fullConfig, null, 2);
-    }
 
-    // ======================== Mode switching ========================
-    const modeBtns = document.querySelectorAll('.mode-btn');
-    const panelJson = document.getElementById('panelJsonProxy');
-    const panelClash = document.getElementById('panelToClash');
-    const panelProxy = document.getElementById('panelToProxy');
-    const modeSlider = document.getElementById('modeSlider');
-    const glassWrap = document.querySelector('.glass-wrap');
-
-    function switchMode(mode) {
-        panelJson.classList.remove('active');
-        panelClash.classList.remove('active');
-        panelProxy.classList.remove('active');
-        glassWrap.classList.remove('theme-teal', 'theme-yellow');
-        if (mode === 'json-proxy') {
-            panelJson.classList.add('active');
-            modeSlider.className = 'mode-slider pos-0';
-            glassWrap.classList.add('theme-yellow');
-        } else if (mode === 'to-clash') {
-            panelClash.classList.add('active');
-            modeSlider.className = 'mode-slider pos-1';
-            glassWrap.classList.remove('theme-yellow');
-        } else {
-            panelProxy.classList.add('active');
-            modeSlider.className = 'mode-slider pos-2';
-            glassWrap.classList.add('theme-teal');
+        function jsonToUrls(rawText) {
+            const objs = extractAllJSON(rawText), urls = [];
+            for (const obj of objs) {
+                if (obj.outbounds && Array.isArray(obj.outbounds)) { obj.outbounds.forEach(o => { buildURLFromOutbound(o, obj.remarks || o.tag, urls); }); continue; }
+                if (obj.outboundBean) buildURLFromOutbound(obj.outboundBean, obj.remarks, urls);
+                else if (obj.custom_json?.outbounds) obj.custom_json.outbounds.forEach(o => buildURLFromOutbound(o, obj.remarks, urls));
+                else if (obj.configType === 'VLESS' && obj.password && obj.server) {
+                    const p = new URLSearchParams(); p.set('encryption', obj.method || 'none'); if (obj.network) p.set('type', obj.network); if (obj.host) p.set('host', obj.host); if (obj.path) p.set('path', obj.path); if (obj.sni) p.set('sni', obj.sni);
+                    urls.push(`vless://${obj.password}@${obj.server}:${obj.serverPort}?${p.toString()}#${encodeURIComponent(obj.remarks||'')}`);
+                }
+                else if (obj.configType === 'SHADOWSOCKS' && obj.method && obj.password && obj.server && obj.serverPort) {
+                    const a = btoa(`${obj.method}:${obj.password}`).replace(/=+$/, ''); urls.push(`ss://${a}@${obj.server}:${obj.serverPort}#${encodeURIComponent(obj.remarks||'')}`);
+                }
+            }
+            const lines = rawText.split(/\r?\n/);
+            for (let l of lines) {
+                l = l.trim();
+                if (l.startsWith('vmess://')) l = decodeVmessBase64(l);
+                if (l.startsWith('wireguard://')) {
+                    const wg = parseWireguardURL(l);
+                    if (wg) buildURLFromOutbound(wg, wg.tag, urls);
+                    continue;
+                }
+                if (l.match(/^(vless|vmess|ss|ssr|trojan|hysteria2|wireguard):\/\//)) urls.push(l);
+            }
+            return [...new Set(urls)].join('\n');
         }
-        modeBtns.forEach(btn => { btn.classList.toggle('active', btn.dataset.mode === mode); });
-    }
-    modeBtns.forEach(btn => btn.addEventListener('click', () => switchMode(btn.dataset.mode)));
-    switchMode('to-clash');
 
-    // ========== Protocol selector for Proxy → Clash ==========
-    const protoBtns = document.querySelectorAll('#protoSelector .proto-btn');
-    const proxyInput = document.getElementById('proxyInput');
-    const clashErrorMsg = document.getElementById('clashErrorMsg');
-    const placeholders = {
-        vless: 'vless://uuid@host:port?type=tcp&security=none#example',
-        vmess: 'vmess://eyJ2IjoiMiIsInBzIjoiRXhhbXBsZSIsImFkZCI6ImV4YW1wbGUuY29tIiwicG9ydCI6NDQzLCJpZCI6InV1aWQiLCJhaWQiOjAsIm5ldCI6InRjcCIsInR5cGUiOiJub25lIiwidGxzIjoibm9uZSJ9',
-        ss: 'ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:8443#Example',
-        ssr: 'ssr://MTI3LjAuMC4xOjEyMzQ6YXV0aF9hZXMxMjhfbWQ1OmFlcy0yNTYtY2ZiOnBsYWluOnRsczEuMl90aWNrZXRfYXV0aDpNVEl6Lz9vYmZzcGFyYW0',
-        trojan: 'trojan://password@example.com:443?sni=example.com#Example'
-    };
-    let currentProto = 'vless';
-    protoBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-            protoBtns.forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            currentProto = btn.dataset.proto;
-            proxyInput.placeholder = placeholders[currentProto];
+        function urlsToJson(rawText) {
+            const lines = rawText.split(/\r?\n/).filter(l => l.trim());
+            const outbounds = [];
+            for (let line of lines) {
+                line = line.trim();
+                if (line.startsWith('vmess://')) line = decodeVmessBase64(line);
+                if (line.startsWith('wireguard://')) { const wg = parseWireguardURL(line); if (wg) outbounds.push(wg); continue; }
+                try {
+                    const u = safeNewURL(line);
+                    if (!u) continue;
+                    const proto = u.protocol.slice(0, -1);
+                    const tag = u.hash ? decodeURIComponent(u.hash.slice(1)) : proto;
+                    const p = u.searchParams;
+                    const typeParam = p.get('type') || 'tcp';
+                    const hostVal = p.get('host') || '';
+                    const pathVal = p.get('path') || '';
+                    const flow = p.get('flow') || '';
+                    const sni = p.get('sni') || '';
+                    const fp = p.get('fp') || '';
+                    const pbk = p.get('pbk') || '';
+                    const sid = p.get('sid') || '';
+                    const serviceName = p.get('serviceName') || '';
+                    const allowInsecure = p.get('allowInsecure') === '1';
+                    const ssConf = {
+                        network: typeParam === 'xhttp' ? 'splithttp' : typeParam,
+                        security: p.get('security') || 'none',
+                        tlsSettings: { serverName: sni, allowInsecure, fingerprint: fp, alpn: p.get('alpn') ? p.get('alpn').split(',') : [] },
+                        realitySettings: { publicKey: pbk, shortId: sid, serverName: sni },
+                        wsSettings: typeParam === 'ws' && hostVal ? { headers: { Host: hostVal }, path: pathVal } : undefined,
+                        httpupgradeSettings: typeParam === 'httpupgrade' ? { host: hostVal, path: pathVal } : undefined,
+                        splithttpSettings: typeParam === 'splithttp' ? { host: hostVal, path: pathVal } : undefined,
+                        grpcSettings: serviceName ? { serviceName } : undefined
+                    };
+                    if (proto === 'vless') outbounds.push({ protocol: 'vless', tag, settings: { vnext: [{ address: u.hostname, port: +u.port || 443, users: [{ id: u.username, encryption: p.get('encryption') || 'none', flow }] }] }, streamSettings: ssConf });
+                    if (proto === 'vmess') outbounds.push({ protocol: 'vmess', tag, settings: { vnext: [{ address: u.hostname, port: +u.port || 443, users: [{ id: u.username, security: p.get('encryption') || 'auto' }] }] }, streamSettings: ssConf });
+                    if (proto === 'trojan') outbounds.push({ protocol: 'trojan', tag, settings: { servers: [{ address: u.hostname, port: +u.port || 443, password: decodeURIComponent(u.username) }] }, streamSettings: ssConf });
+                    if (proto === 'ss') {
+                        let body = line.slice(5);
+                        let tagSs = '';
+                        if (body.includes('#')) {
+                            const parts = body.split('#');
+                            body = parts[0];
+                            tagSs = decodeURIComponent(parts[1]);
+                        }
+                        let authPart, rest;
+                        if (body.includes('@')) {
+                            [authPart, rest] = body.split('@');
+                        } else {
+                            const decoded = safeAtob(body);
+                            if (!decoded || !decoded.includes('@')) continue;
+                            [authPart, rest] = decoded.split('@');
+                        }
+                        const decodedAuth = safeAtob(authPart);
+                        if (!decodedAuth || !decodedAuth.includes(':')) continue;
+                        const [method, password] = decodedAuth.split(':');
+                        let address, port;
+                        const lastColonIndex = rest.lastIndexOf(':');
+                        if (lastColonIndex !== -1) {
+                            address = rest.substring(0, lastColonIndex);
+                            port = parseInt(rest.substring(lastColonIndex + 1), 10);
+                        } else {
+                            address = rest;
+                            port = null;
+                        }
+                        const finalPort = port && !isNaN(port) ? port : 1080;
+                        outbounds.push({
+                            protocol: 'shadowsocks',
+                            tag: tagSs || 'ss',
+                            settings: { servers: [{ address, port: finalPort, method, password }] },
+                            streamSettings: { network: 'tcp' }
+                        });
+                        continue;
+                    }
+                    if (proto === 'hysteria2') {
+                        const password = decodeURIComponent(u.username);
+                        const [host, port] = u.host.split(':');
+                        outbounds.push({ protocol: 'hysteria2', tag, settings: { servers: [{ address: host, port: parseInt(port,10) || 443 }] }, streamSettings: { network: 'hysteria2', security: 'tls', hy2Settings: { password }, tlsSettings: { allowInsecure, serverName: sni } } });
+                    }
+                } catch {}
+            }
+            const fullConfig = {
+                dns: { servers: [{ address: '8.8.8.8' }] },
+                inbounds: [{ listen: '0.0.0.0', port: 1080, protocol: 'socks', settings: { auth: 'noauth', udp: true } }],
+                log: { loglevel: 'warning' },
+                outbounds: outbounds,
+                routing: { domainStrategy: 'AsIs', rules: [] }
+            };
+            return JSON.stringify(fullConfig, null, 2);
+        }
+
+        // ======================== Mode switching ========================
+        const modeBtns = document.querySelectorAll('.mode-btn');
+        const panelJson = document.getElementById('panelJsonProxy');
+        const panelClash = document.getElementById('panelToClash');
+        const panelProxy = document.getElementById('panelToProxy');
+        const modeSlider = document.getElementById('modeSlider');
+        const glassWrap = document.querySelector('.glass-wrap');
+
+        function switchMode(mode) {
+            panelJson.classList.remove('active');
+            panelClash.classList.remove('active');
+            panelProxy.classList.remove('active');
+            glassWrap.classList.remove('theme-teal', 'theme-yellow');
+            if (mode === 'json-proxy') {
+                panelJson.classList.add('active');
+                modeSlider.className = 'mode-slider pos-0';
+                glassWrap.classList.add('theme-yellow');
+            } else if (mode === 'to-clash') {
+                panelClash.classList.add('active');
+                modeSlider.className = 'mode-slider pos-1';
+                glassWrap.classList.remove('theme-yellow');
+            } else {
+                panelProxy.classList.add('active');
+                modeSlider.className = 'mode-slider pos-2';
+                glassWrap.classList.add('theme-teal');
+            }
+            modeBtns.forEach(btn => { btn.classList.toggle('active', btn.dataset.mode === mode); });
+        }
+        modeBtns.forEach(btn => btn.addEventListener('click', () => switchMode(btn.dataset.mode)));
+        switchMode('to-clash');
+
+        // ========== Protocol selector for Proxy → Clash ==========
+        const protoBtns = document.querySelectorAll('#protoSelector .proto-btn');
+        const proxyInput = document.getElementById('proxyInput');
+        const clashErrorMsg = document.getElementById('clashErrorMsg');
+        const placeholders = {
+            vless: 'vless://uuid@host:port?type=tcp&security=none#example',
+            vmess: 'vmess://eyJ2IjoiMiIsInBzIjoiRXhhbXBsZSIsImFkZCI6ImV4YW1wbGUuY29tIiwicG9ydCI6NDQzLCJpZCI6InV1aWQiLCJhaWQiOjAsIm5ldCI6InRjcCIsInR5cGUiOiJub25lIiwidGxzIjoibm9uZSJ9',
+            ss: 'ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:8443#Example',
+            ssr: 'ssr://MTI3LjAuMC4xOjEyMzQ6YXV0aF9hZXMxMjhfbWQ1OmFlcy0yNTYtY2ZiOnBsYWluOnRsczEuMl90aWNrZXRfYXV0aDpNVEl6Lz9vYmZzcGFyYW0',
+            trojan: 'trojan://password@example.com:443?sni=example.com#Example'
+        };
+        let currentProto = 'vless';
+        protoBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                protoBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentProto = btn.dataset.proto;
+                proxyInput.placeholder = placeholders[currentProto];
+                clashErrorMsg.classList.remove('show');
+                clashErrorMsg.textContent = '';
+            });
+        });
+
+        // ========== JSON ↔ Proxy panel logic ==========
+        const jsonInput = document.getElementById('jsonProxyInput');
+        const jsonOutput = document.getElementById('jsonProxyOutput');
+        const jsonToUrlsBtn = document.getElementById('jsonToUrlsBtn');
+        const urlsToJsonBtn = document.getElementById('urlsToJsonBtn');
+        const clearJsonProxyBtn = document.getElementById('clearJsonProxyBtn');
+        const copyJsonOutput = document.getElementById('copyJsonOutputBtn');
+        const downloadJsonOutput = document.getElementById('downloadJsonOutputBtn');
+        const jsonUploadZone = document.getElementById('jsonUploadZone');
+        const jsonFileInput = document.getElementById('jsonFileInput');
+        const jsonFileNameSpan = document.querySelector('#jsonFileName span');
+
+        jsonToUrlsBtn.onclick = () => {
+            const raw = jsonInput.value.trim();
+            if (!raw) { showToast('Enter JSON or proxy list'); return; }
+            try { jsonOutput.value = jsonToUrls(raw); } catch (e) { showToast('Error: ' + e.message); }
+        };
+        urlsToJsonBtn.onclick = () => {
+            const raw = jsonInput.value.trim();
+            if (!raw) { showToast('Enter proxy URLs'); return; }
+            try { jsonOutput.value = urlsToJson(raw); } catch (e) { showToast('Error: ' + e.message); }
+        };
+        clearJsonProxyBtn.onclick = () => { jsonInput.value = ''; jsonOutput.value = ''; jsonUploadZone.classList.remove('has-file'); };
+        copyJsonOutput.onclick = () => { if (jsonOutput.value.trim()) copyText(jsonOutput.value); else showToast('Nothing to copy'); };
+        downloadJsonOutput.onclick = () => {
+            if (!jsonOutput.value.trim()) { showToast('No output'); return; }
+            const blob = new Blob([jsonOutput.value], {type:'text/plain'});
+            const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'result.txt'; a.click(); URL.revokeObjectURL(a.href);
+        };
+        function handleJsonFile(file) {
+            const reader = new FileReader();
+            reader.onload = e => {
+                let content = e.target.result;
+                content = stripBOM(content);
+                jsonInput.value = content;
+                jsonUploadZone.classList.add('has-file');
+                jsonFileNameSpan.textContent = file.name;
+            };
+            reader.readAsText(file);
+        }
+        jsonUploadZone.addEventListener('click', () => jsonFileInput.click());
+        jsonUploadZone.addEventListener('dragover', e => e.preventDefault());
+        jsonUploadZone.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer.files.length) handleJsonFile(e.dataTransfer.files[0]); });
+        jsonFileInput.addEventListener('change', () => { if (jsonFileInput.files.length) handleJsonFile(jsonFileInput.files[0]); });
+
+        // ========== Proxy → Clash conversion ==========
+        function parseVless(url) { 
+            const u = safeNewURL(url); if(!u) throw new Error("Invalid URL");
+            const params = new URLSearchParams(u.search); const name = decodeURIComponent(u.hash.slice(1)) || 'VLESS'; 
+            const proxy = { name, type: 'vless', server: u.hostname, port: parseInt(u.port) || 443, uuid: u.username, network: params.get('type') || 'tcp', tls: params.get('security') === 'tls' || params.get('security') === 'reality', udp: true }; 
+            if (params.get('flow')) proxy.flow = params.get('flow'); if (params.get('sni')) proxy.servername = params.get('sni'); if (params.get('fp')) proxy['client-fingerprint'] = params.get('fp'); 
+            if (params.get('security') === 'reality') { proxy['reality-opts'] = {}; if (params.get('pbk')) proxy['reality-opts']['public-key'] = params.get('pbk'); if (params.get('sid')) proxy['reality-opts']['short-id'] = params.get('sid'); } 
+            if (proxy.network === 'ws') { proxy['ws-opts'] = {}; if (params.get('path')) proxy['ws-opts'].path = params.get('path'); if (params.get('host')) proxy['ws-opts'].headers = { Host: params.get('host') }; } return proxy; 
+        }
+        
+        function parseVmess(url) { 
+            try {
+                let [urlWithoutHash, hashPart] = url.split('#');
+                let raw = urlWithoutHash.slice(8);
+                const name = hashPart ? decodeURIComponent(hashPart) : 'VMess';
+                
+                if (raw.includes('@')) { 
+                    const [uuidPart, rest] = raw.split('@'); 
+                    const [hostPort, query] = rest.split('?'); 
+                    const [server, port] = hostPort.split(':'); 
+                    const params = new URLSearchParams(query || ''); 
+                    const proxy = { 
+                        name, type: 'vmess', server, port: parseInt(port) || 443, 
+                        uuid: uuidPart, alterId: parseInt(params.get('aid') || '0'), 
+                        cipher: 'auto', network: params.get('type') || 'tcp', 
+                        tls: params.get('security') === 'tls', udp: true 
+                    };
+                    if (proxy.network === 'ws') {
+                        proxy['ws-opts'] = {};
+                        if (params.get('path')) proxy['ws-opts'].path = params.get('path');
+                        if (params.get('host')) proxy['ws-opts'].headers = { Host: params.get('host') };
+                    }
+                    if (params.get('sni')) proxy.servername = params.get('sni');
+                    if (params.get('fp')) proxy['client-fingerprint'] = params.get('fp');
+                    return proxy;
+                } else { 
+                    const cleanRaw = raw;
+                    const decoded = safeAtob(cleanRaw); 
+                    if(!decoded) throw new Error('Base64 decode empty');
+                    const obj = JSON.parse(decoded); 
+                    const proxy = { 
+                        name: obj.ps || name, type: 'vmess', server: obj.add, 
+                        port: parseInt(obj.port) || 443, uuid: obj.id, 
+                        alterId: parseInt(obj.aid || 0), cipher: 'auto', 
+                        network: obj.net || 'tcp', tls: obj.tls === 'tls', udp: true 
+                    };
+                    if (proxy.network === 'ws') {
+                        proxy['ws-opts'] = {};
+                        if (obj.path) proxy['ws-opts'].path = obj.path;
+                        if (obj.host) proxy['ws-opts'].headers = { Host: obj.host };
+                    }
+                    if (obj.sni) proxy.servername = obj.sni;
+                    if (obj.fp) proxy['client-fingerprint'] = obj.fp;
+                    return proxy;
+                }
+            } catch (e) { throw new Error('Invalid VMess config: ' + e.message); }
+        }
+        
+        function parseShadowsocks(url) { 
+            try {
+                let raw = url.slice(5); let name = ''; if (raw.includes('#')) { const parts = raw.split('#'); raw = parts[0]; name = decodeURIComponent(parts[1]); } 
+                let server, port, method, password; 
+                if (raw.includes('@')) { 
+                    const [auth, hostpart] = raw.split('@'); 
+                    const decodedAuth = safeAtob(auth); if(!decodedAuth) throw new Error();
+                    const [methodRaw, passRaw] = decodedAuth.split(':'); method = methodRaw; password = passRaw; 
+                    const lastColonIndex = hostpart.lastIndexOf(':');
+                    if (lastColonIndex !== -1) {
+                        server = hostpart.substring(0, lastColonIndex);
+                        port = parseInt(hostpart.substring(lastColonIndex + 1), 10);
+                    } else {
+                        server = hostpart;
+                        port = null;
+                    }
+                } else { 
+                    const decoded = safeAtob(raw); if(!decoded) throw new Error();
+                    const [methodPass, hostport] = decoded.split('@'); [method, password] = methodPass.split(':'); 
+                    const lastColonIndex = hostport.lastIndexOf(':');
+                    if (lastColonIndex !== -1) {
+                        server = hostport.substring(0, lastColonIndex);
+                        port = parseInt(hostport.substring(lastColonIndex + 1), 10);
+                    } else {
+                        server = hostport;
+                        port = null;
+                    }
+                } 
+                return { name: name || `SS-${server}`, type: 'ss', server, port: (port && !isNaN(port)) ? port : 1080, cipher: method, password, udp: true }; 
+            } catch { throw new Error('Invalid Shadowsocks link'); }
+        }
+        
+        function parseSSR(url) { 
+            try {
+                let raw = url.slice(6).split('#')[0]; 
+                const decoded = safeAtob(raw); if(!decoded) throw new Error();
+                const parts = decoded.split(':', 6);
+                if (parts.length < 6) throw new Error(); 
+                const server = parts[0];
+                const port = parseInt(parts[1]);
+                const protocol = parts[2];
+                const cipher = parts[3];
+                const obfs = parts[4];
+                let passwordPart = parts[5];
+                let questionIdx = passwordPart.indexOf('?');
+                if (questionIdx !== -1) passwordPart = passwordPart.slice(0, questionIdx);
+                const password = safeAtob(passwordPart);
+                const paramsPart = decoded.split('?')[1];
+                const params = new URLSearchParams(paramsPart || ''); 
+                const name = params.get('remarks') ? safeAtob(params.get('remarks')) : `SSR-${server}`; 
+                return { name, type: 'ssr', server, port, cipher, password, protocol, 'protocol-param': params.get('protoparam') ? safeAtob(params.get('protoparam')) : '', obfs, 'obfs-param': params.get('obfsparam') ? safeAtob(params.get('obfsparam')) : '', udp: true }; 
+            } catch { throw new Error('Invalid SSR link'); }
+        }
+        
+        function parseTrojan(url) { 
+            const u = safeNewURL(url); if(!u) throw new Error("Invalid URL");
+            const params = new URLSearchParams(u.search); const name = decodeURIComponent(u.hash.slice(1)) || 'Trojan'; 
+            const proxy = { name, type: 'trojan', server: u.hostname, port: parseInt(u.port) || 443, password: decodeURIComponent(u.username), udp: true }; 
+            if (params.get('sni')) proxy.sni = params.get('sni'); if (params.get('allowInsecure') === '1') proxy['skip-cert-verify'] = true; return proxy; 
+        }
+        function buildClashYaml(proxy) { const clash = { port: 7890, 'socks-port': 7891, 'allow-lan': true, mode: 'rule', 'log-level': 'warning', proxies: [proxy], 'proxy-groups': [{ name: 'Proxy', type: 'select', proxies: [proxy.name] }], rules: ['MATCH,Proxy'] }; return jsyaml.dump(clash); }
+
+        let currentYaml = '';
+        
+        function validateProtocol(url, expectedProto) {
+            if (!url) return false;
+            const lowerUrl = url.toLowerCase();
+            if (expectedProto === 'vless') return lowerUrl.startsWith('vless://');
+            if (expectedProto === 'vmess') return lowerUrl.startsWith('vmess://');
+            if (expectedProto === 'ss') return lowerUrl.startsWith('ss://');
+            if (expectedProto === 'ssr') return lowerUrl.startsWith('ssr://');
+            if (expectedProto === 'trojan') return lowerUrl.startsWith('trojan://');
+            return false;
+        }
+        
+        document.getElementById('convertToClashBtn').addEventListener('click', () => {
+            const url = proxyInput.value.trim();
             clashErrorMsg.classList.remove('show');
             clashErrorMsg.textContent = '';
-        });
-    });
-
-    // ========== JSON ↔ Proxy panel logic ==========
-    const jsonInput = document.getElementById('jsonProxyInput');
-    const jsonOutput = document.getElementById('jsonProxyOutput');
-    const jsonToUrlsBtn = document.getElementById('jsonToUrlsBtn');
-    const urlsToJsonBtn = document.getElementById('urlsToJsonBtn');
-    const clearJsonProxyBtn = document.getElementById('clearJsonProxyBtn');
-    const copyJsonOutput = document.getElementById('copyJsonOutputBtn');
-    const downloadJsonOutput = document.getElementById('downloadJsonOutputBtn');
-    const jsonUploadZone = document.getElementById('jsonUploadZone');
-    const jsonFileInput = document.getElementById('jsonFileInput');
-    const jsonFileNameSpan = document.querySelector('#jsonFileName span');
-
-    jsonToUrlsBtn.onclick = () => {
-        const raw = jsonInput.value.trim();
-        if (!raw) { showToast('Enter JSON or proxy list'); return; }
-        try { jsonOutput.value = jsonToUrls(raw); } catch (e) { showToast('Error: ' + e.message); }
-    };
-    urlsToJsonBtn.onclick = () => {
-        const raw = jsonInput.value.trim();
-        if (!raw) { showToast('Enter proxy URLs'); return; }
-        try { jsonOutput.value = urlsToJson(raw); } catch (e) { showToast('Error: ' + e.message); }
-    };
-    clearJsonProxyBtn.onclick = () => { jsonInput.value = ''; jsonOutput.value = ''; jsonUploadZone.classList.remove('has-file'); };
-    copyJsonOutput.onclick = () => { if (jsonOutput.value.trim()) copyText(jsonOutput.value); else showToast('Nothing to copy'); };
-    downloadJsonOutput.onclick = () => {
-        if (!jsonOutput.value.trim()) { showToast('No output'); return; }
-        const blob = new Blob([jsonOutput.value], {type:'text/plain'});
-        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'result.txt'; a.click(); URL.revokeObjectURL(a.href);
-    };
-    function handleJsonFile(file) {
-        const reader = new FileReader();
-        reader.onload = e => {
-            let content = e.target.result;
-            content = stripBOM(content);
-            jsonInput.value = content;
-            jsonUploadZone.classList.add('has-file');
-            jsonFileNameSpan.textContent = file.name;
-        };
-        reader.readAsText(file);
-    }
-    jsonUploadZone.addEventListener('click', () => jsonFileInput.click());
-    jsonUploadZone.addEventListener('dragover', e => e.preventDefault());
-    jsonUploadZone.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer.files.length) handleJsonFile(e.dataTransfer.files[0]); });
-    jsonFileInput.addEventListener('change', () => { if (jsonFileInput.files.length) handleJsonFile(jsonFileInput.files[0]); });
-
-    // ========== Proxy → Clash conversion ==========
-    function parseVless(url) { 
-        const u = safeNewURL(url); if(!u) throw new Error("Invalid URL");
-        const params = new URLSearchParams(u.search); const name = decodeURIComponent(u.hash.slice(1)) || 'VLESS'; 
-        const proxy = { name, type: 'vless', server: u.hostname, port: parseInt(u.port) || 443, uuid: u.username, network: params.get('type') || 'tcp', tls: params.get('security') === 'tls' || params.get('security') === 'reality', udp: true }; 
-        if (params.get('flow')) proxy.flow = params.get('flow'); if (params.get('sni')) proxy.servername = params.get('sni'); if (params.get('fp')) proxy['client-fingerprint'] = params.get('fp'); 
-        if (params.get('security') === 'reality') { proxy['reality-opts'] = {}; if (params.get('pbk')) proxy['reality-opts']['public-key'] = params.get('pbk'); if (params.get('sid')) proxy['reality-opts']['short-id'] = params.get('sid'); } 
-        if (proxy.network === 'ws') { proxy['ws-opts'] = {}; if (params.get('path')) proxy['ws-opts'].path = params.get('path'); if (params.get('host')) proxy['ws-opts'].headers = { Host: params.get('host') }; } return proxy; 
-    }
-    
-    function parseVmess(url) { 
-        try {
-            let [urlWithoutHash, hashPart] = url.split('#');
-            let raw = urlWithoutHash.slice(8);
-            const name = hashPart ? decodeURIComponent(hashPart) : 'VMess';
             
-            if (raw.includes('@')) { 
-                const [uuidPart, rest] = raw.split('@'); 
-                const [hostPort, query] = rest.split('?'); 
-                const [server, port] = hostPort.split(':'); 
-                const params = new URLSearchParams(query || ''); 
-                const proxy = { 
-                    name, type: 'vmess', server, port: parseInt(port) || 443, 
-                    uuid: uuidPart, alterId: parseInt(params.get('aid') || '0'), 
-                    cipher: 'auto', network: params.get('type') || 'tcp', 
-                    tls: params.get('security') === 'tls', udp: true 
-                };
-                if (proxy.network === 'ws') {
-                    proxy['ws-opts'] = {};
-                    if (params.get('path')) proxy['ws-opts'].path = params.get('path');
-                    if (params.get('host')) proxy['ws-opts'].headers = { Host: params.get('host') };
-                }
-                if (params.get('sni')) proxy.servername = params.get('sni');
-                if (params.get('fp')) proxy['client-fingerprint'] = params.get('fp');
-                return proxy;
-            } else { 
-                const cleanRaw = raw;
-                const decoded = safeAtob(cleanRaw); 
-                if(!decoded) throw new Error('Base64 decode empty');
-                const obj = JSON.parse(decoded); 
-                const proxy = { 
-                    name: obj.ps || name, type: 'vmess', server: obj.add, 
-                    port: parseInt(obj.port) || 443, uuid: obj.id, 
-                    alterId: parseInt(obj.aid || 0), cipher: 'auto', 
-                    network: obj.net || 'tcp', tls: obj.tls === 'tls', udp: true 
-                };
-                if (proxy.network === 'ws') {
-                    proxy['ws-opts'] = {};
-                    if (obj.path) proxy['ws-opts'].path = obj.path;
-                    if (obj.host) proxy['ws-opts'].headers = { Host: obj.host };
-                }
-                if (obj.sni) proxy.servername = obj.sni;
-                if (obj.fp) proxy['client-fingerprint'] = obj.fp;
-                return proxy;
-            }
-        } catch (e) { throw new Error('Invalid VMess config: ' + e.message); }
-    }
-    
-    function parseShadowsocks(url) { 
-        try {
-            let raw = url.slice(5); let name = ''; if (raw.includes('#')) { const parts = raw.split('#'); raw = parts[0]; name = decodeURIComponent(parts[1]); } 
-            let server, port, method, password; 
-            if (raw.includes('@')) { 
-                const [auth, hostpart] = raw.split('@'); 
-                const decodedAuth = safeAtob(auth); if(!decodedAuth) throw new Error();
-                const [methodRaw, passRaw] = decodedAuth.split(':'); method = methodRaw; password = passRaw; 
-                const lastColonIndex = hostpart.lastIndexOf(':');
-                if (lastColonIndex !== -1) {
-                    server = hostpart.substring(0, lastColonIndex);
-                    port = parseInt(hostpart.substring(lastColonIndex + 1), 10);
-                } else {
-                    server = hostpart;
-                    port = null;
-                }
-            } else { 
-                const decoded = safeAtob(raw); if(!decoded) throw new Error();
-                const [methodPass, hostport] = decoded.split('@'); [method, password] = methodPass.split(':'); 
-                const lastColonIndex = hostport.lastIndexOf(':');
-                if (lastColonIndex !== -1) {
-                    server = hostport.substring(0, lastColonIndex);
-                    port = parseInt(hostport.substring(lastColonIndex + 1), 10);
-                } else {
-                    server = hostport;
-                    port = null;
-                }
-            } 
-            return { name: name || `SS-${server}`, type: 'ss', server, port: (port && !isNaN(port)) ? port : 1080, cipher: method, password, udp: true }; 
-        } catch { throw new Error('Invalid Shadowsocks link'); }
-    }
-    
-    function parseSSR(url) { 
-        try {
-            let raw = url.slice(6).split('#')[0]; 
-            const decoded = safeAtob(raw); if(!decoded) throw new Error();
-            const parts = decoded.split(':', 6);
-            if (parts.length < 6) throw new Error(); 
-            const server = parts[0];
-            const port = parseInt(parts[1]);
-            const protocol = parts[2];
-            const cipher = parts[3];
-            const obfs = parts[4];
-            let passwordPart = parts[5];
-            let questionIdx = passwordPart.indexOf('?');
-            if (questionIdx !== -1) passwordPart = passwordPart.slice(0, questionIdx);
-            const password = safeAtob(passwordPart);
-            const paramsPart = decoded.split('?')[1];
-            const params = new URLSearchParams(paramsPart || ''); 
-            const name = params.get('remarks') ? safeAtob(params.get('remarks')) : `SSR-${server}`; 
-            return { name, type: 'ssr', server, port, cipher, password, protocol, 'protocol-param': params.get('protoparam') ? safeAtob(params.get('protoparam')) : '', obfs, 'obfs-param': params.get('obfsparam') ? safeAtob(params.get('obfsparam')) : '', udp: true }; 
-        } catch { throw new Error('Invalid SSR link'); }
-    }
-    
-    function parseTrojan(url) { 
-        const u = safeNewURL(url); if(!u) throw new Error("Invalid URL");
-        const params = new URLSearchParams(u.search); const name = decodeURIComponent(u.hash.slice(1)) || 'Trojan'; 
-        const proxy = { name, type: 'trojan', server: u.hostname, port: parseInt(u.port) || 443, password: decodeURIComponent(u.username), udp: true }; 
-        if (params.get('sni')) proxy.sni = params.get('sni'); if (params.get('allowInsecure') === '1') proxy['skip-cert-verify'] = true; return proxy; 
-    }
-    function buildClashYaml(proxy) { const clash = { port: 7890, 'socks-port': 7891, 'allow-lan': true, mode: 'rule', 'log-level': 'warning', proxies: [proxy], 'proxy-groups': [{ name: 'Proxy', type: 'select', proxies: [proxy.name] }], rules: ['MATCH,Proxy'] }; return jsyaml.dump(clash); }
-
-    let currentYaml = '';
-    
-    function validateProtocol(url, expectedProto) {
-        if (!url) return false;
-        const lowerUrl = url.toLowerCase();
-        if (expectedProto === 'vless') return lowerUrl.startsWith('vless://');
-        if (expectedProto === 'vmess') return lowerUrl.startsWith('vmess://');
-        if (expectedProto === 'ss') return lowerUrl.startsWith('ss://');
-        if (expectedProto === 'ssr') return lowerUrl.startsWith('ssr://');
-        if (expectedProto === 'trojan') return lowerUrl.startsWith('trojan://');
-        return false;
-    }
-    
-    document.getElementById('convertToClashBtn').addEventListener('click', () => {
-        const url = proxyInput.value.trim();
-        clashErrorMsg.classList.remove('show');
-        clashErrorMsg.textContent = '';
-        
-        if (!url) { 
-            showToast('Enter proxy URL'); 
-            return; 
-        }
-        
-        if (!validateProtocol(url, currentProto)) {
-            const protoNames = {
-                vless: 'VLESS',
-                vmess: 'VMess',
-                ss: 'Shadowsocks',
-                ssr: 'SSR',
-                trojan: 'Trojan'
-            };
-            const expected = protoNames[currentProto];
-            clashErrorMsg.textContent = `❌ Invalid protocol: expected ${expected} link starting with "${currentProto}://". Please check your input.`;
-            clashErrorMsg.classList.add('show');
-            document.getElementById('clashOutputArea').classList.remove('visible');
-            currentYaml = '';
-            return;
-        }
-        
-        let proxyObj;
-        try {
-            if (currentProto === 'vless') proxyObj = parseVless(url);
-            else if (currentProto === 'vmess') proxyObj = parseVmess(url);
-            else if (currentProto === 'ss') proxyObj = parseShadowsocks(url);
-            else if (currentProto === 'ssr') proxyObj = parseSSR(url);
-            else proxyObj = parseTrojan(url);
-        } catch(e) { 
-            showToast('Parse error: ' + e.message);
-            clashErrorMsg.textContent = `❌ Failed to parse ${currentProto} link: ${e.message}`;
-            clashErrorMsg.classList.add('show');
-            document.getElementById('clashOutputArea').classList.remove('visible');
-            currentYaml = '';
-            return; 
-        }
-        const yaml = buildClashYaml(proxyObj);
-        currentYaml = yaml;
-        document.getElementById('yamlPreview').textContent = yaml;
-        document.getElementById('clashOutputArea').classList.add('visible');
-    });
-    
-    document.getElementById('clearProxyBtn').onclick = () => { 
-        proxyInput.value = ''; 
-        document.getElementById('clashOutputArea').classList.remove('visible'); 
-        currentYaml = '';
-        clashErrorMsg.classList.remove('show');
-        clashErrorMsg.textContent = '';
-    };
-    document.getElementById('copyYamlBtn').onclick = () => { if (currentYaml) copyText(currentYaml); else showToast('No YAML'); };
-    document.getElementById('downloadYamlBtn').onclick = () => { if (currentYaml) { const blob = new Blob([currentYaml], {type:'application/yaml'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'clash_config.yaml'; a.click(); URL.revokeObjectURL(a.href); } };
-
-    // ========== Clash → Proxy logic ==========
-    const yamlTextarea = document.getElementById('yamlInput');
-    const extractBtn = document.getElementById('extractUrlsBtn');
-    const clearYamlBtn = document.getElementById('clearYamlBtn');
-    const proxyListArea = document.getElementById('proxyListArea');
-    const proxyGrid = document.getElementById('proxyGrid');
-    const resultCountSpan = document.getElementById('resultCount');
-    let currentProxies = [];
-
-    function buildVlessURL(p) {
-        let url = `vless://${p.uuid}@${p.server}:${p.port}?`;
-        const params = new URLSearchParams();
-        params.set('type', p.network || 'tcp');
-        if (p.flow) params.set('flow', p.flow);
-        if (p.servername) params.set('sni', p.servername);
-        if (p['client-fingerprint']) params.set('fp', p['client-fingerprint']);
-        if (p.tls) params.set('security', p['reality-opts'] ? 'reality' : 'tls');
-        if (p['reality-opts']) {
-            if (p['reality-opts']['public-key']) params.set('pbk', p['reality-opts']['public-key']);
-            if (p['reality-opts']['short-id']) params.set('sid', p['reality-opts']['short-id']);
-        }
-        if (p.network === 'ws' && p['ws-opts']) {
-            if (p['ws-opts'].path) params.set('path', p['ws-opts'].path);
-            if (p['ws-opts'].headers && p['ws-opts'].headers.Host) params.set('host', p['ws-opts'].headers.Host);
-        }
-        url += params.toString();
-        url += `#${encodeURIComponent(p.name)}`;
-        return url;
-    }
-    function buildVmessURL(p) {
-        const vmessObj = {
-            v: '2',
-            ps: p.name,
-            add: p.server,
-            port: p.port,
-            id: p.uuid,
-            aid: p.alterId || 0,
-            net: p.network || 'tcp',
-            type: 'none',
-            tls: p.tls ? 'tls' : ''
-        };
-        if (p.network === 'ws' && p['ws-opts']) {
-            if (p['ws-opts'].path) vmessObj.path = p['ws-opts'].path;
-            if (p['ws-opts'].headers && p['ws-opts'].headers.Host) vmessObj.host = p['ws-opts'].headers.Host;
-        }
-        if (p.servername) vmessObj.sni = p.servername;
-        if (p['client-fingerprint']) vmessObj.fp = p['client-fingerprint'];
-        const json = JSON.stringify(vmessObj);
-        const base64 = btoa(json).replace(/=/g, '');
-        return `vmess://${base64}`;
-    }
-    function buildSSURL(p) {
-        const auth = btoa(`${p.cipher}:${p.password}`);
-        return `ss://${auth}@${p.server}:${p.port}#${encodeURIComponent(p.name)}`;
-    }
-    function buildTrojanURL(p) {
-        let url = `trojan://${encodeURIComponent(p.password)}@${p.server}:${p.port}`;
-        const params = new URLSearchParams();
-        if (p.sni) params.set('sni', p.sni);
-        if (p['skip-cert-verify']) params.set('allowInsecure', '1');
-        if (params.toString()) url += `?${params.toString()}`;
-        url += `#${encodeURIComponent(p.name)}`;
-        return url;
-    }
-    function buildSSRURL(p) {
-        const parts = [
-            p.server,
-            p.port,
-            p.protocol,
-            p.cipher,
-            p.obfs,
-            btoa(p.password).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-        ];
-        const query = new URLSearchParams();
-        if (p['protocol-param']) query.set('protoparam', btoa(p['protocol-param']).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''));
-        if (p['obfs-param']) query.set('obfsparam', btoa(p['obfs-param']).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''));
-        query.set('remarks', btoa(p.name).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''));
-        const base = parts.join(':');
-        return `ssr://${btoa(base + (query.toString() ? '?' + query.toString() : '')).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
-    }
-    function buildHysteria2URL(p) {
-        let url = `hysteria2://${encodeURIComponent(p.password)}@${p.server}:${p.port}`;
-        const params = new URLSearchParams();
-        if (p.sni) params.set('sni', p.sni);
-        if (p['skip-cert-verify']) params.set('insecure', '1');
-        if (p.obfs) params.set('obfs', p.obfs);
-        if (p['obfs-password']) params.set('obfs-password', p['obfs-password']);
-        if (params.toString()) url += `?${params.toString()}`;
-        url += `#${encodeURIComponent(p.name)}`;
-        return url;
-    }
-
-    function safeParseYAML(yamlText) {
-        if (typeof jsyaml === 'undefined') {
-            throw new Error('YAML library (js-yaml) not loaded. Please check your internet connection and reload the page.');
-        }
-        let cleanText = stripBOM(yamlText);
-        try {
-            return jsyaml.load(cleanText, { schema: jsyaml.DEFAULT_SCHEMA });
-        } catch (e1) {
-            console.warn('DEFAULT_SCHEMA failed, trying FAILSAFE_SCHEMA', e1);
-            try {
-                return jsyaml.load(cleanText, { schema: jsyaml.FAILSAFE_SCHEMA });
-            } catch (e2) {
-                throw new Error(`YAML parse failed: ${e2.message}`);
-            }
-        }
-    }
-
-    function extractProxiesFromYaml(yamlText) { 
-        let data; 
-        try { 
-            data = safeParseYAML(yamlText);
-        } catch(e) { 
-            throw new Error(`YAML parse failed: ${e.message}`);
-        } 
-        let proxies = []; 
-        if (Array.isArray(data)) proxies = data; 
-        else if (data && Array.isArray(data.proxies)) proxies = data.proxies; 
-        else throw new Error('No proxies section found in YAML (expected "proxies:" array)'); 
-        const results = []; 
-        for (const p of proxies) { 
-            try {
-                let url = null; 
-                if (p.type === 'vless') url = buildVlessURL(p); 
-                else if (p.type === 'vmess') url = buildVmessURL(p); 
-                else if (p.type === 'ss') url = buildSSURL(p); 
-                else if (p.type === 'trojan') url = buildTrojanURL(p); 
-                else if (p.type === 'ssr') url = buildSSRURL(p);
-                else if (p.type === 'hysteria2') url = buildHysteria2URL(p);
-                if (url) results.push({ name: p.name, type: p.type, url }); 
-            } catch (e) {
-                console.warn(`Failed to convert proxy ${p.name || 'unknown'}`, e);
-            }
-        } 
-        return results; 
-    }
-
-    extractBtn.onclick = () => { 
-        const yaml = yamlTextarea.value.trim(); 
-        if (!yaml) { showToast('Paste YAML'); return; } 
-        try { 
-            const results = extractProxiesFromYaml(yaml); 
-            currentProxies = results.filter(p=>p.url); 
-            resultCountSpan.textContent = currentProxies.length; 
-            proxyGrid.innerHTML = ''; 
-            if (!currentProxies.length) { 
-                const emptyNotice = document.createElement('div');
-                emptyNotice.style.color = '#6b7280';
-                emptyNotice.textContent = 'No supported proxies found in YAML (vless, vmess, ss, ssr, trojan, hysteria2)';
-                proxyGrid.appendChild(emptyNotice);
-                proxyListArea.classList.add('visible'); 
+            if (!url) { 
+                showToast('Enter proxy URL'); 
                 return; 
-            } 
-            for (const p of currentProxies) {
-                const card = document.createElement('div');
-                card.className = 'proxy-card success';
-                const nameDiv = document.createElement('div');
-                nameDiv.className = 'card-name';
-                nameDiv.textContent = p.name + ' ';
-                const badge = document.createElement('span');
-                badge.className = 'proto-badge';
-                badge.textContent = p.type.toUpperCase();
-                nameDiv.appendChild(badge);
-                const urlDiv = document.createElement('div');
-                urlDiv.className = 'proxy-url';
-                urlDiv.textContent = p.url;
-                const copyBtn = document.createElement('button');
-                copyBtn.className = 'copy-btn';
-                copyBtn.textContent = '📋 Copy link';
-                copyBtn.addEventListener('click', (function(url) { return function() { copyText(url); }; })(p.url));
-                card.appendChild(nameDiv);
-                card.appendChild(urlDiv);
-                card.appendChild(copyBtn);
-                proxyGrid.appendChild(card);
             }
-            proxyListArea.classList.add('visible'); 
-        } catch(e) { 
-            showToast('Error: ' + e.message);
-            console.error(e);
-        } 
-    };
+            
+            if (!validateProtocol(url, currentProto)) {
+                const protoNames = {
+                    vless: 'VLESS',
+                    vmess: 'VMess',
+                    ss: 'Shadowsocks',
+                    ssr: 'SSR',
+                    trojan: 'Trojan'
+                };
+                const expected = protoNames[currentProto];
+                clashErrorMsg.textContent = `❌ Invalid protocol: expected ${expected} link starting with "${currentProto}://". Please check your input.`;
+                clashErrorMsg.classList.add('show');
+                document.getElementById('clashOutputArea').classList.remove('visible');
+                currentYaml = '';
+                return;
+            }
+            
+            let proxyObj;
+            try {
+                if (currentProto === 'vless') proxyObj = parseVless(url);
+                else if (currentProto === 'vmess') proxyObj = parseVmess(url);
+                else if (currentProto === 'ss') proxyObj = parseShadowsocks(url);
+                else if (currentProto === 'ssr') proxyObj = parseSSR(url);
+                else proxyObj = parseTrojan(url);
+            } catch(e) { 
+                showToast('Parse error: ' + e.message);
+                clashErrorMsg.textContent = `❌ Failed to parse ${currentProto} link: ${e.message}`;
+                clashErrorMsg.classList.add('show');
+                document.getElementById('clashOutputArea').classList.remove('visible');
+                currentYaml = '';
+                return; 
+            }
+            const yaml = buildClashYaml(proxyObj);
+            currentYaml = yaml;
+            document.getElementById('yamlPreview').textContent = yaml;
+            document.getElementById('clashOutputArea').classList.add('visible');
+        });
+        
+        document.getElementById('clearProxyBtn').onclick = () => { 
+            proxyInput.value = ''; 
+            document.getElementById('clashOutputArea').classList.remove('visible'); 
+            currentYaml = '';
+            clashErrorMsg.classList.remove('show');
+            clashErrorMsg.textContent = '';
+        };
+        document.getElementById('copyYamlBtn').onclick = () => { if (currentYaml) copyText(currentYaml); else showToast('No YAML'); };
+        document.getElementById('downloadYamlBtn').onclick = () => { if (currentYaml) { const blob = new Blob([currentYaml], {type:'application/yaml'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'clash_config.yaml'; a.click(); URL.revokeObjectURL(a.href); } };
 
-    clearYamlBtn.onclick = () => { yamlTextarea.value = ''; proxyListArea.classList.remove('visible'); proxyGrid.innerHTML = ''; currentProxies = []; };
-    document.getElementById('copyAllUrlsBtn').onclick = () => { if (!currentProxies.length) showToast('No URLs'); else copyText(currentProxies.map(p=>p.url).join('\n')); };
-    document.getElementById('downloadUrlsBtn').onclick = () => { if (!currentProxies.length) return; const blob = new Blob([currentProxies.map(p=>p.url).join('\n')], {type:'text/plain'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'proxies.txt'; a.click(); URL.revokeObjectURL(a.href); };
+        // ========== Clash → Proxy logic ==========
+        const yamlTextarea = document.getElementById('yamlInput');
+        const extractBtn = document.getElementById('extractUrlsBtn');
+        const clearYamlBtn = document.getElementById('clearYamlBtn');
+        const proxyListArea = document.getElementById('proxyListArea');
+        const proxyGrid = document.getElementById('proxyGrid');
+        const resultCountSpan = document.getElementById('resultCount');
+        let currentProxies = [];
 
-    const uploadZoneYaml = document.getElementById('uploadZone');
-    const fileInputYaml = document.getElementById('fileInput');
-    const fileNameSpanYaml = document.getElementById('fileNameText');
-    function handleYamlFile(file) { 
-        const reader = new FileReader(); 
-        reader.onload = e => { 
-            let content = e.target.result;
-            content = stripBOM(content);
-            yamlTextarea.value = content; 
-            uploadZoneYaml.classList.add('has-file'); 
-            fileNameSpanYaml.textContent = file.name; 
-            extractBtn.click(); 
-        }; 
-        reader.readAsText(file); 
-    }
-    uploadZoneYaml.addEventListener('click', () => fileInputYaml.click());
-    uploadZoneYaml.addEventListener('dragover', e => e.preventDefault());
-    uploadZoneYaml.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer.files.length) handleYamlFile(e.dataTransfer.files[0]); });
-    fileInputYaml.addEventListener('change', () => { if (fileInputYaml.files.length) handleYamlFile(fileInputYaml.files[0]); });
+        function buildVlessURL(p) {
+            let url = `vless://${p.uuid}@${p.server}:${p.port}?`;
+            const params = new URLSearchParams();
+            params.set('type', p.network || 'tcp');
+            if (p.flow) params.set('flow', p.flow);
+            if (p.servername) params.set('sni', p.servername);
+            if (p['client-fingerprint']) params.set('fp', p['client-fingerprint']);
+            if (p.tls) params.set('security', p['reality-opts'] ? 'reality' : 'tls');
+            if (p['reality-opts']) {
+                if (p['reality-opts']['public-key']) params.set('pbk', p['reality-opts']['public-key']);
+                if (p['reality-opts']['short-id']) params.set('sid', p['reality-opts']['short-id']);
+            }
+            if (p.network === 'ws' && p['ws-opts']) {
+                if (p['ws-opts'].path) params.set('path', p['ws-opts'].path);
+                if (p['ws-opts'].headers && p['ws-opts'].headers.Host) params.set('host', p['ws-opts'].headers.Host);
+            }
+            url += params.toString();
+            url += `#${encodeURIComponent(p.name)}`;
+            return url;
+        }
+        function buildVmessURL(p) {
+            const vmessObj = {
+                v: '2',
+                ps: p.name,
+                add: p.server,
+                port: p.port,
+                id: p.uuid,
+                aid: p.alterId || 0,
+                net: p.network || 'tcp',
+                type: 'none',
+                tls: p.tls ? 'tls' : ''
+            };
+            if (p.network === 'ws' && p['ws-opts']) {
+                if (p['ws-opts'].path) vmessObj.path = p['ws-opts'].path;
+                if (p['ws-opts'].headers && p['ws-opts'].headers.Host) vmessObj.host = p['ws-opts'].headers.Host;
+            }
+            if (p.servername) vmessObj.sni = p.servername;
+            if (p['client-fingerprint']) vmessObj.fp = p['client-fingerprint'];
+            const json = JSON.stringify(vmessObj);
+            const base64 = btoa(json).replace(/=/g, '');
+            return `vmess://${base64}`;
+        }
+        function buildSSURL(p) {
+            const auth = btoa(`${p.cipher}:${p.password}`);
+            return `ss://${auth}@${p.server}:${p.port}#${encodeURIComponent(p.name)}`;
+        }
+        function buildTrojanURL(p) {
+            let url = `trojan://${encodeURIComponent(p.password)}@${p.server}:${p.port}`;
+            const params = new URLSearchParams();
+            if (p.sni) params.set('sni', p.sni);
+            if (p['skip-cert-verify']) params.set('allowInsecure', '1');
+            if (params.toString()) url += `?${params.toString()}`;
+            url += `#${encodeURIComponent(p.name)}`;
+            return url;
+        }
+        function buildSSRURL(p) {
+            const parts = [
+                p.server,
+                p.port,
+                p.protocol,
+                p.cipher,
+                p.obfs,
+                btoa(p.password).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+            ];
+            const query = new URLSearchParams();
+            if (p['protocol-param']) query.set('protoparam', btoa(p['protocol-param']).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''));
+            if (p['obfs-param']) query.set('obfsparam', btoa(p['obfs-param']).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''));
+            query.set('remarks', btoa(p.name).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''));
+            const base = parts.join(':');
+            return `ssr://${btoa(base + (query.toString() ? '?' + query.toString() : '')).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')}`;
+        }
+        function buildHysteria2URL(p) {
+            let url = `hysteria2://${encodeURIComponent(p.password)}@${p.server}:${p.port}`;
+            const params = new URLSearchParams();
+            if (p.sni) params.set('sni', p.sni);
+            if (p['skip-cert-verify']) params.set('insecure', '1');
+            if (p.obfs) params.set('obfs', p.obfs);
+            if (p['obfs-password']) params.set('obfs-password', p['obfs-password']);
+            if (params.toString()) url += `?${params.toString()}`;
+            url += `#${encodeURIComponent(p.name)}`;
+            return url;
+        }
+
+        function safeParseYAML(yamlText) {
+            if (typeof jsyaml === 'undefined') {
+                throw new Error('YAML library not loaded. Please refresh the page and disable ad blockers if necessary.');
+            }
+            let cleanText = stripBOM(yamlText);
+            try {
+                return jsyaml.load(cleanText, { schema: jsyaml.DEFAULT_SCHEMA });
+            } catch (e1) {
+                try {
+                    return jsyaml.load(cleanText, { schema: jsyaml.FAILSAFE_SCHEMA });
+                } catch (e2) {
+                    throw new Error(`YAML parse failed: ${e2.message}`);
+                }
+            }
+        }
+
+        function extractProxiesFromYaml(yamlText) { 
+            let data; 
+            try { 
+                data = safeParseYAML(yamlText);
+            } catch(e) { 
+                throw new Error(`YAML parse failed: ${e.message}`);
+            } 
+            let proxies = []; 
+            if (Array.isArray(data)) proxies = data; 
+            else if (data && Array.isArray(data.proxies)) proxies = data.proxies; 
+            else throw new Error('No proxies section found in YAML (expected "proxies:" array)'); 
+            const results = []; 
+            for (const p of proxies) { 
+                try {
+                    let url = null; 
+                    if (p.type === 'vless') url = buildVlessURL(p); 
+                    else if (p.type === 'vmess') url = buildVmessURL(p); 
+                    else if (p.type === 'ss') url = buildSSURL(p); 
+                    else if (p.type === 'trojan') url = buildTrojanURL(p); 
+                    else if (p.type === 'ssr') url = buildSSRURL(p);
+                    else if (p.type === 'hysteria2') url = buildHysteria2URL(p);
+                    if (url) results.push({ name: p.name, type: p.type, url }); 
+                } catch (e) {
+                    console.warn(`Failed to convert proxy ${p.name || 'unknown'}`, e);
+                }
+            } 
+            return results; 
+        }
+
+        extractBtn.onclick = () => { 
+            const yaml = yamlTextarea.value.trim(); 
+            if (!yaml) { showToast('Paste YAML'); return; } 
+            try { 
+                const results = extractProxiesFromYaml(yaml); 
+                currentProxies = results.filter(p=>p.url); 
+                resultCountSpan.textContent = currentProxies.length; 
+                proxyGrid.innerHTML = ''; 
+                if (!currentProxies.length) { 
+                    const emptyNotice = document.createElement('div');
+                    emptyNotice.style.color = '#6b7280';
+                    emptyNotice.textContent = 'No supported proxies found in YAML (vless, vmess, ss, ssr, trojan, hysteria2)';
+                    proxyGrid.appendChild(emptyNotice);
+                    proxyListArea.classList.add('visible'); 
+                    return; 
+                } 
+                for (const p of currentProxies) {
+                    const card = document.createElement('div');
+                    card.className = 'proxy-card success';
+                    const nameDiv = document.createElement('div');
+                    nameDiv.className = 'card-name';
+                    nameDiv.textContent = p.name + ' ';
+                    const badge = document.createElement('span');
+                    badge.className = 'proto-badge';
+                    badge.textContent = p.type.toUpperCase();
+                    nameDiv.appendChild(badge);
+                    const urlDiv = document.createElement('div');
+                    urlDiv.className = 'proxy-url';
+                    urlDiv.textContent = p.url;
+                    const copyBtn = document.createElement('button');
+                    copyBtn.className = 'copy-btn';
+                    copyBtn.textContent = '📋 Copy link';
+                    copyBtn.addEventListener('click', (function(url) { return function() { copyText(url); }; })(p.url));
+                    card.appendChild(nameDiv);
+                    card.appendChild(urlDiv);
+                    card.appendChild(copyBtn);
+                    proxyGrid.appendChild(card);
+                }
+                proxyListArea.classList.add('visible'); 
+            } catch(e) { 
+                showToast('Error: ' + e.message);
+                console.error(e);
+            } 
+        };
+
+        clearYamlBtn.onclick = () => { yamlTextarea.value = ''; proxyListArea.classList.remove('visible'); proxyGrid.innerHTML = ''; currentProxies = []; };
+        document.getElementById('copyAllUrlsBtn').onclick = () => { if (!currentProxies.length) showToast('No URLs'); else copyText(currentProxies.map(p=>p.url).join('\n')); };
+        document.getElementById('downloadUrlsBtn').onclick = () => { if (!currentProxies.length) return; const blob = new Blob([currentProxies.map(p=>p.url).join('\n')], {type:'text/plain'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'proxies.txt'; a.click(); URL.revokeObjectURL(a.href); };
+
+        const uploadZoneYaml = document.getElementById('uploadZone');
+        const fileInputYaml = document.getElementById('fileInput');
+        const fileNameSpanYaml = document.getElementById('fileNameText');
+        function handleYamlFile(file) { 
+            const reader = new FileReader(); 
+            reader.onload = e => { 
+                let content = e.target.result;
+                content = stripBOM(content);
+                yamlTextarea.value = content; 
+                uploadZoneYaml.classList.add('has-file'); 
+                fileNameSpanYaml.textContent = file.name; 
+                extractBtn.click(); 
+            }; 
+            reader.readAsText(file); 
+        }
+        uploadZoneYaml.addEventListener('click', () => fileInputYaml.click());
+        uploadZoneYaml.addEventListener('dragover', e => e.preventDefault());
+        uploadZoneYaml.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer.files.length) handleYamlFile(e.dataTransfer.files[0]); });
+        fileInputYaml.addEventListener('change', () => { if (fileInputYaml.files.length) handleYamlFile(fileInputYaml.files[0]); });
+    } // конец initApp
 </script>
 </body>
 </html>
