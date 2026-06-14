@@ -194,8 +194,36 @@
             border-radius: 8px;
             cursor: pointer;
             font-size: 0.8rem;
+            margin-right: 8px;
         }
         .copy-btn:hover { background: #374151; }
+        .proxy-checkbox {
+            margin-left: auto;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(31,41,55,0.4);
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        .proxy-checkbox:hover { background: rgba(59,130,246,0.3); }
+        .proxy-checkbox input {
+            width: 16px;
+            height: 16px;
+            margin: 0;
+            cursor: pointer;
+            accent-color: #3b82f6;
+        }
+        .card-actions {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 8px;
+        }
         .proxy-url {
             font-family: monospace;
             font-size: 0.75rem;
@@ -343,12 +371,19 @@
                 <div class="proto-btn" data-proto="trojan">Trojan</div>
             </div>
             <div class="form-group">
-                <div class="label-row"><label>Proxy URL</label></div>
+                <div class="label-row"><label>Single Proxy URL</label></div>
                 <input type="text" id="proxyInput" placeholder="vless://uuid@host:port?type=tcp&security=none#example">
                 <div id="clashErrorMsg" class="error-message"></div>
             </div>
+            <!-- Новая секция для массовой загрузки подписок из txt -->
+            <div class="upload-zone" id="txtUploadZone" style="margin-bottom: 16px;">
+                <input type="file" id="txtFileInput" accept=".txt">
+                <div class="upload-text">📂 Or upload .txt file with multiple proxy URLs (one per line)</div>
+                <div class="file-name" id="txtFileName"><span></span></div>
+            </div>
             <div class="btn-row">
-                <button id="convertToClashBtn" class="btn-primary">⚡ Convert to YAML</button>
+                <button id="convertToClashBtn" class="btn-primary">⚡ Convert single URL to YAML</button>
+                <button id="convertTxtToClashBtn" class="btn-secondary">📄 Convert TXT (multiple) to YAML</button>
                 <button id="clearProxyBtn" class="btn-outline">🗑 Clear</button>
             </div>
             <div id="clashOutputArea" class="output-area">
@@ -368,7 +403,7 @@
             </div>
             <div class="upload-zone" id="uploadZone">
                 <input type="file" id="fileInput" accept=".yaml,.yml,.txt">
-                <div class="upload-text">📂 Click or drag .yaml / .txt file</div>
+                <div class="upload-text">📂 Click or drag .yaml / .yml file</div>
                 <div class="file-name" id="fileName"><span id="fileNameText"></span></div>
             </div>
             <div class="btn-row">
@@ -378,10 +413,10 @@
             <div id="proxyListArea" class="output-area">
                 <div class="proxy-results-header">
                     <span>Extracted <strong id="resultCount">0</strong> proxies</span>
-                    <button id="copyAllUrlsBtn" class="btn-outline">📋 Copy all</button>
+                    <button id="copyAllUrlsBtn" class="btn-outline">📋 Copy all (selected)</button>
                 </div>
                 <div id="proxyGrid" class="proxy-grid"></div>
-                <div style="margin-top:12px;"><button id="downloadUrlsBtn" class="btn-outline">💾 Download all URLs (.txt)</button></div>
+                <div style="margin-top:12px;"><button id="downloadUrlsBtn" class="btn-outline">💾 Download selected URLs (.txt)</button></div>
             </div>
         </div>
 
@@ -404,7 +439,6 @@
         }
     }
 
-    // Основной код запускаем после загрузки библиотеки
     waitForYaml(function() {
         console.log('YAML library ready, initializing app');
         initApp();
@@ -915,6 +949,16 @@
             if (params.get('sni')) proxy.sni = params.get('sni'); if (params.get('allowInsecure') === '1') proxy['skip-cert-verify'] = true; return proxy; 
         }
         function buildClashYaml(proxy) { const clash = { port: 7890, 'socks-port': 7891, 'allow-lan': true, mode: 'rule', 'log-level': 'warning', proxies: [proxy], 'proxy-groups': [{ name: 'Proxy', type: 'select', proxies: [proxy.name] }], rules: ['MATCH,Proxy'] }; return jsyaml.dump(clash); }
+        // Для нескольких прокси
+        function buildClashYamlMultiple(proxies) {
+            const clash = { 
+                port: 7890, 'socks-port': 7891, 'allow-lan': true, mode: 'rule', 'log-level': 'warning', 
+                proxies: proxies, 
+                'proxy-groups': [{ name: 'Proxy', type: 'select', proxies: proxies.map(p => p.name) }], 
+                rules: ['MATCH,Proxy'] 
+            };
+            return jsyaml.dump(clash);
+        }
 
         let currentYaml = '';
         
@@ -929,6 +973,7 @@
             return false;
         }
         
+        // Конвертация одного URL (старая кнопка)
         document.getElementById('convertToClashBtn').addEventListener('click', () => {
             const url = proxyInput.value.trim();
             clashErrorMsg.classList.remove('show');
@@ -976,24 +1021,108 @@
             document.getElementById('clashOutputArea').classList.add('visible');
         });
         
+        // Новая кнопка: конвертация TXT с несколькими ссылками
+        document.getElementById('convertTxtToClashBtn').addEventListener('click', () => {
+            const txtContent = document.getElementById('yamlInput')?.value || ''; // используем поле yamlInput как временное? Но лучше отдельно: загружаем из файла или из textarea? Сделаем загрузку из файла txt.
+            // Фактически у нас есть отдельная зона загрузки txt файла. Будем читать файл и преобразовывать.
+            const fileInput = document.getElementById('txtFileInput');
+            if (!fileInput.files || fileInput.files.length === 0) {
+                showToast('Please select a .txt file with proxy URLs first (upload zone above)');
+                return;
+            }
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                let content = e.target.result;
+                content = stripBOM(content);
+                const lines = content.split(/\r?\n/).filter(l => l.trim().length > 0);
+                if (lines.length === 0) {
+                    showToast('No URLs found in file');
+                    return;
+                }
+                const proxies = [];
+                const errors = [];
+                for (let line of lines) {
+                    line = line.trim();
+                    // Определяем протокол по началу строки
+                    let proto = null;
+                    if (line.startsWith('vless://')) proto = 'vless';
+                    else if (line.startsWith('vmess://')) proto = 'vmess';
+                    else if (line.startsWith('ss://')) proto = 'ss';
+                    else if (line.startsWith('ssr://')) proto = 'ssr';
+                    else if (line.startsWith('trojan://')) proto = 'trojan';
+                    else {
+                        errors.push(`Unsupported or unknown protocol: ${line.substring(0,30)}...`);
+                        continue;
+                    }
+                    try {
+                        let proxyObj;
+                        if (proto === 'vless') proxyObj = parseVless(line);
+                        else if (proto === 'vmess') proxyObj = parseVmess(line);
+                        else if (proto === 'ss') proxyObj = parseShadowsocks(line);
+                        else if (proto === 'ssr') proxyObj = parseSSR(line);
+                        else if (proto === 'trojan') proxyObj = parseTrojan(line);
+                        if (proxyObj) proxies.push(proxyObj);
+                    } catch(e) {
+                        errors.push(`Parse error for ${proto}: ${e.message}`);
+                    }
+                }
+                if (proxies.length === 0) {
+                    showToast('No valid proxies found in file');
+                    if (errors.length) console.warn(errors);
+                    return;
+                }
+                const yaml = buildClashYamlMultiple(proxies);
+                currentYaml = yaml;
+                document.getElementById('yamlPreview').textContent = yaml;
+                document.getElementById('clashOutputArea').classList.add('visible');
+                showToast(`Converted ${proxies.length} proxies to YAML`);
+                if (errors.length) showToast(`Warnings: ${errors.length} items failed`);
+            };
+            reader.readAsText(file);
+        });
+        
+        // Обработка загрузки txt файла (отображение имени)
+        const txtUploadZone = document.getElementById('txtUploadZone');
+        const txtFileInput = document.getElementById('txtFileInput');
+        const txtFileNameSpan = document.querySelector('#txtFileName span');
+        function handleTxtFile(file) {
+            txtFileNameSpan.textContent = file.name;
+            txtUploadZone.classList.add('has-file');
+            // Можно также предварительно показать содержимое в textarea? Не обязательно, просто сохраняем.
+        }
+        txtUploadZone.addEventListener('click', () => txtFileInput.click());
+        txtUploadZone.addEventListener('dragover', e => e.preventDefault());
+        txtUploadZone.addEventListener('drop', e => {
+            e.preventDefault();
+            if (e.dataTransfer.files.length) handleTxtFile(e.dataTransfer.files[0]);
+        });
+        txtFileInput.addEventListener('change', () => {
+            if (txtFileInput.files.length) handleTxtFile(txtFileInput.files[0]);
+        });
+        
         document.getElementById('clearProxyBtn').onclick = () => { 
             proxyInput.value = ''; 
             document.getElementById('clashOutputArea').classList.remove('visible'); 
             currentYaml = '';
             clashErrorMsg.classList.remove('show');
             clashErrorMsg.textContent = '';
+            // также сбросить загруженный txt файл
+            txtFileInput.value = '';
+            txtUploadZone.classList.remove('has-file');
+            txtFileNameSpan.textContent = '';
         };
         document.getElementById('copyYamlBtn').onclick = () => { if (currentYaml) copyText(currentYaml); else showToast('No YAML'); };
         document.getElementById('downloadYamlBtn').onclick = () => { if (currentYaml) { const blob = new Blob([currentYaml], {type:'application/yaml'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'clash_config.yaml'; a.click(); URL.revokeObjectURL(a.href); } };
 
-        // ========== Clash → Proxy logic ==========
+        // ========== Clash → Proxy logic с чекбоксами ==========
         const yamlTextarea = document.getElementById('yamlInput');
         const extractBtn = document.getElementById('extractUrlsBtn');
         const clearYamlBtn = document.getElementById('clearYamlBtn');
         const proxyListArea = document.getElementById('proxyListArea');
         const proxyGrid = document.getElementById('proxyGrid');
         const resultCountSpan = document.getElementById('resultCount');
-        let currentProxies = [];
+        let currentProxies = []; // храним объекты { name, type, url, checked? } - чекбоксы динамические
 
         function buildVlessURL(p) {
             let url = `vless://${p.uuid}@${p.server}:${p.port}?`;
@@ -1115,7 +1244,7 @@
                     else if (p.type === 'trojan') url = buildTrojanURL(p); 
                     else if (p.type === 'ssr') url = buildSSRURL(p);
                     else if (p.type === 'hysteria2') url = buildHysteria2URL(p);
-                    if (url) results.push({ name: p.name, type: p.type, url }); 
+                    if (url) results.push({ name: p.name, type: p.type, url, checked: true }); // по умолчанию true
                 } catch (e) {
                     console.warn(`Failed to convert proxy ${p.name || 'unknown'}`, e);
                 }
@@ -1123,44 +1252,62 @@
             return results; 
         }
 
+        function renderProxyCards(proxies) {
+            proxyGrid.innerHTML = '';
+            if (!proxies.length) {
+                const emptyNotice = document.createElement('div');
+                emptyNotice.style.color = '#6b7280';
+                emptyNotice.textContent = 'No supported proxies found';
+                proxyGrid.appendChild(emptyNotice);
+                return;
+            }
+            for (let i = 0; i < proxies.length; i++) {
+                const p = proxies[i];
+                const card = document.createElement('div');
+                card.className = 'proxy-card success';
+                const nameDiv = document.createElement('div');
+                nameDiv.className = 'card-name';
+                nameDiv.textContent = p.name + ' ';
+                const badge = document.createElement('span');
+                badge.className = 'proto-badge';
+                badge.textContent = p.type.toUpperCase();
+                nameDiv.appendChild(badge);
+                const urlDiv = document.createElement('div');
+                urlDiv.className = 'proxy-url';
+                urlDiv.textContent = p.url;
+                const actionsDiv = document.createElement('div');
+                actionsDiv.className = 'card-actions';
+                const copyBtn = document.createElement('button');
+                copyBtn.className = 'copy-btn';
+                copyBtn.textContent = '📋 Copy link';
+                copyBtn.addEventListener('click', (function(url) { return function() { copyText(url); }; })(p.url));
+                const checkLabel = document.createElement('label');
+                checkLabel.className = 'proxy-checkbox';
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = p.checked !== undefined ? p.checked : true;
+                checkbox.addEventListener('change', (function(idx) { return function(e) { proxies[idx].checked = e.target.checked; }; })(i));
+                const span = document.createElement('span');
+                span.textContent = 'Active';
+                checkLabel.appendChild(checkbox);
+                checkLabel.appendChild(span);
+                actionsDiv.appendChild(copyBtn);
+                actionsDiv.appendChild(checkLabel);
+                card.appendChild(nameDiv);
+                card.appendChild(urlDiv);
+                card.appendChild(actionsDiv);
+                proxyGrid.appendChild(card);
+            }
+        }
+
         extractBtn.onclick = () => { 
             const yaml = yamlTextarea.value.trim(); 
             if (!yaml) { showToast('Paste YAML'); return; } 
             try { 
                 const results = extractProxiesFromYaml(yaml); 
-                currentProxies = results.filter(p=>p.url); 
+                currentProxies = results; 
                 resultCountSpan.textContent = currentProxies.length; 
-                proxyGrid.innerHTML = ''; 
-                if (!currentProxies.length) { 
-                    const emptyNotice = document.createElement('div');
-                    emptyNotice.style.color = '#6b7280';
-                    emptyNotice.textContent = 'No supported proxies found in YAML (vless, vmess, ss, ssr, trojan, hysteria2)';
-                    proxyGrid.appendChild(emptyNotice);
-                    proxyListArea.classList.add('visible'); 
-                    return; 
-                } 
-                for (const p of currentProxies) {
-                    const card = document.createElement('div');
-                    card.className = 'proxy-card success';
-                    const nameDiv = document.createElement('div');
-                    nameDiv.className = 'card-name';
-                    nameDiv.textContent = p.name + ' ';
-                    const badge = document.createElement('span');
-                    badge.className = 'proto-badge';
-                    badge.textContent = p.type.toUpperCase();
-                    nameDiv.appendChild(badge);
-                    const urlDiv = document.createElement('div');
-                    urlDiv.className = 'proxy-url';
-                    urlDiv.textContent = p.url;
-                    const copyBtn = document.createElement('button');
-                    copyBtn.className = 'copy-btn';
-                    copyBtn.textContent = '📋 Copy link';
-                    copyBtn.addEventListener('click', (function(url) { return function() { copyText(url); }; })(p.url));
-                    card.appendChild(nameDiv);
-                    card.appendChild(urlDiv);
-                    card.appendChild(copyBtn);
-                    proxyGrid.appendChild(card);
-                }
+                renderProxyCards(currentProxies);
                 proxyListArea.classList.add('visible'); 
             } catch(e) { 
                 showToast('Error: ' + e.message);
@@ -1169,8 +1316,18 @@
         };
 
         clearYamlBtn.onclick = () => { yamlTextarea.value = ''; proxyListArea.classList.remove('visible'); proxyGrid.innerHTML = ''; currentProxies = []; };
-        document.getElementById('copyAllUrlsBtn').onclick = () => { if (!currentProxies.length) showToast('No URLs'); else copyText(currentProxies.map(p=>p.url).join('\n')); };
-        document.getElementById('downloadUrlsBtn').onclick = () => { if (!currentProxies.length) return; const blob = new Blob([currentProxies.map(p=>p.url).join('\n')], {type:'text/plain'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'proxies.txt'; a.click(); URL.revokeObjectURL(a.href); };
+        
+        document.getElementById('copyAllUrlsBtn').onclick = () => { 
+            const selectedUrls = currentProxies.filter(p => p.checked !== false).map(p => p.url);
+            if (!selectedUrls.length) showToast('No selected URLs');
+            else copyText(selectedUrls.join('\n'));
+        };
+        document.getElementById('downloadUrlsBtn').onclick = () => { 
+            const selectedUrls = currentProxies.filter(p => p.checked !== false).map(p => p.url);
+            if (!selectedUrls.length) { showToast('No selected URLs'); return; }
+            const blob = new Blob([selectedUrls.join('\n')], {type:'text/plain'}); 
+            const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'proxies.txt'; a.click(); URL.revokeObjectURL(a.href); 
+        };
 
         const uploadZoneYaml = document.getElementById('uploadZone');
         const fileInputYaml = document.getElementById('fileInput');
