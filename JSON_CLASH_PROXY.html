@@ -292,7 +292,6 @@
         @media (max-width:540px) { .glass { padding:24px 16px; } .btn-row { flex-direction:column; } }
     </style>
     <script>
-        // Загрузка js-yaml с резервными вариантами
         (function loadYaml() {
             if (typeof jsyaml !== 'undefined') return;
             var script = document.createElement('script');
@@ -375,7 +374,6 @@
                 <input type="text" id="proxyInput" placeholder="vless://uuid@host:port?type=tcp&security=none#example">
                 <div id="clashErrorMsg" class="error-message"></div>
             </div>
-            <!-- Новая секция для массовой загрузки подписок из txt -->
             <div class="upload-zone" id="txtUploadZone" style="margin-bottom: 16px;">
                 <input type="file" id="txtFileInput" accept=".txt">
                 <div class="upload-text">📂 Or upload .txt file with multiple proxy URLs (one per line)</div>
@@ -949,7 +947,6 @@
             if (params.get('sni')) proxy.sni = params.get('sni'); if (params.get('allowInsecure') === '1') proxy['skip-cert-verify'] = true; return proxy; 
         }
         function buildClashYaml(proxy) { const clash = { port: 7890, 'socks-port': 7891, 'allow-lan': true, mode: 'rule', 'log-level': 'warning', proxies: [proxy], 'proxy-groups': [{ name: 'Proxy', type: 'select', proxies: [proxy.name] }], rules: ['MATCH,Proxy'] }; return jsyaml.dump(clash); }
-        // Для нескольких прокси
         function buildClashYamlMultiple(proxies) {
             const clash = { 
                 port: 7890, 'socks-port': 7891, 'allow-lan': true, mode: 'rule', 'log-level': 'warning', 
@@ -973,7 +970,6 @@
             return false;
         }
         
-        // Конвертация одного URL (старая кнопка)
         document.getElementById('convertToClashBtn').addEventListener('click', () => {
             const url = proxyInput.value.trim();
             clashErrorMsg.classList.remove('show');
@@ -1021,10 +1017,7 @@
             document.getElementById('clashOutputArea').classList.add('visible');
         });
         
-        // Новая кнопка: конвертация TXT с несколькими ссылками
         document.getElementById('convertTxtToClashBtn').addEventListener('click', () => {
-            const txtContent = document.getElementById('yamlInput')?.value || ''; // используем поле yamlInput как временное? Но лучше отдельно: загружаем из файла или из textarea? Сделаем загрузку из файла txt.
-            // Фактически у нас есть отдельная зона загрузки txt файла. Будем читать файл и преобразовывать.
             const fileInput = document.getElementById('txtFileInput');
             if (!fileInput.files || fileInput.files.length === 0) {
                 showToast('Please select a .txt file with proxy URLs first (upload zone above)');
@@ -1044,7 +1037,6 @@
                 const errors = [];
                 for (let line of lines) {
                     line = line.trim();
-                    // Определяем протокол по началу строки
                     let proto = null;
                     if (line.startsWith('vless://')) proto = 'vless';
                     else if (line.startsWith('vmess://')) proto = 'vmess';
@@ -1082,14 +1074,12 @@
             reader.readAsText(file);
         });
         
-        // Обработка загрузки txt файла (отображение имени)
         const txtUploadZone = document.getElementById('txtUploadZone');
         const txtFileInput = document.getElementById('txtFileInput');
         const txtFileNameSpan = document.querySelector('#txtFileName span');
         function handleTxtFile(file) {
             txtFileNameSpan.textContent = file.name;
             txtUploadZone.classList.add('has-file');
-            // Можно также предварительно показать содержимое в textarea? Не обязательно, просто сохраняем.
         }
         txtUploadZone.addEventListener('click', () => txtFileInput.click());
         txtUploadZone.addEventListener('dragover', e => e.preventDefault());
@@ -1107,7 +1097,6 @@
             currentYaml = '';
             clashErrorMsg.classList.remove('show');
             clashErrorMsg.textContent = '';
-            // также сбросить загруженный txt файл
             txtFileInput.value = '';
             txtUploadZone.classList.remove('has-file');
             txtFileNameSpan.textContent = '';
@@ -1115,14 +1104,14 @@
         document.getElementById('copyYamlBtn').onclick = () => { if (currentYaml) copyText(currentYaml); else showToast('No YAML'); };
         document.getElementById('downloadYamlBtn').onclick = () => { if (currentYaml) { const blob = new Blob([currentYaml], {type:'application/yaml'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'clash_config.yaml'; a.click(); URL.revokeObjectURL(a.href); } };
 
-        // ========== Clash → Proxy logic с чекбоксами ==========
+        // ========== Clash → Proxy logic ==========
         const yamlTextarea = document.getElementById('yamlInput');
         const extractBtn = document.getElementById('extractUrlsBtn');
         const clearYamlBtn = document.getElementById('clearYamlBtn');
         const proxyListArea = document.getElementById('proxyListArea');
         const proxyGrid = document.getElementById('proxyGrid');
         const resultCountSpan = document.getElementById('resultCount');
-        let currentProxies = []; // храним объекты { name, type, url, checked? } - чекбоксы динамические
+        let currentProxies = [];
 
         function buildVlessURL(p) {
             let url = `vless://${p.uuid}@${p.server}:${p.port}?`;
@@ -1244,7 +1233,7 @@
                     else if (p.type === 'trojan') url = buildTrojanURL(p); 
                     else if (p.type === 'ssr') url = buildSSRURL(p);
                     else if (p.type === 'hysteria2') url = buildHysteria2URL(p);
-                    if (url) results.push({ name: p.name, type: p.type, url, checked: true }); // по умолчанию true
+                    if (url) results.push({ name: p.name, type: p.type, url, checked: true });
                 } catch (e) {
                     console.warn(`Failed to convert proxy ${p.name || 'unknown'}`, e);
                 }
@@ -1316,7 +1305,6 @@
         };
 
         clearYamlBtn.onclick = () => { yamlTextarea.value = ''; proxyListArea.classList.remove('visible'); proxyGrid.innerHTML = ''; currentProxies = []; };
-        
         document.getElementById('copyAllUrlsBtn').onclick = () => { 
             const selectedUrls = currentProxies.filter(p => p.checked !== false).map(p => p.url);
             if (!selectedUrls.length) showToast('No selected URLs');
