@@ -414,6 +414,14 @@
         }
     }
 
+    // Удаление BOM из строки
+    function stripBOM(str) {
+        if (str.charCodeAt(0) === 0xFEFF) {
+            return str.slice(1);
+        }
+        return str;
+    }
+
     // ======================== JSON ↔ PROXY CONVERSION ========================
     function extractAllJSON(text) {
         const res = [];
@@ -740,7 +748,13 @@
     };
     function handleJsonFile(file) {
         const reader = new FileReader();
-        reader.onload = e => { jsonInput.value = e.target.result; jsonUploadZone.classList.add('has-file'); jsonFileNameSpan.textContent = file.name; };
+        reader.onload = e => {
+            let content = e.target.result;
+            content = stripBOM(content);
+            jsonInput.value = content;
+            jsonUploadZone.classList.add('has-file');
+            jsonFileNameSpan.textContent = file.name;
+        };
         reader.readAsText(file);
     }
     jsonUploadZone.addEventListener('click', () => jsonFileInput.click());
@@ -1030,13 +1044,33 @@
         return url;
     }
 
+    function safeParseYAML(yamlText) {
+        // Сначала удаляем BOM
+        let cleanText = stripBOM(yamlText);
+        // Пробуем разные схемы
+        try {
+            return jsyaml.load(cleanText, { schema: jsyaml.DEFAULT_SCHEMA });
+        } catch (e1) {
+            console.warn('DEFAULT_SCHEMA failed, trying FAILSAFE_SCHEMA', e1);
+            try {
+                return jsyaml.load(cleanText, { schema: jsyaml.FAILSAFE_SCHEMA });
+            } catch (e2) {
+                throw new Error(`YAML parse failed: ${e2.message}`);
+            }
+        }
+    }
+
     function extractProxiesFromYaml(yamlText) { 
         let data; 
-        try { data = jsyaml.load(yamlText, { schema: jsyaml.DEFAULT_SCHEMA }); } catch(e) { throw new Error('YAML parse failed'); } 
+        try { 
+            data = safeParseYAML(yamlText);
+        } catch(e) { 
+            throw new Error(`YAML parse failed: ${e.message}`);
+        } 
         let proxies = []; 
         if (Array.isArray(data)) proxies = data; 
         else if (data && Array.isArray(data.proxies)) proxies = data.proxies; 
-        else throw new Error('No proxies section'); 
+        else throw new Error('No proxies section found in YAML (expected "proxies:" array)'); 
         const results = []; 
         for (const p of proxies) { 
             try {
@@ -1048,7 +1082,9 @@
                 else if (p.type === 'ssr') url = buildSSRURL(p);
                 else if (p.type === 'hysteria2') url = buildHysteria2URL(p);
                 if (url) results.push({ name: p.name, type: p.type, url }); 
-            } catch {}
+            } catch (e) {
+                console.warn(`Failed to convert proxy ${p.name || 'unknown'}`, e);
+            }
         } 
         return results; 
     }
@@ -1064,7 +1100,7 @@
             if (!currentProxies.length) { 
                 const emptyNotice = document.createElement('div');
                 emptyNotice.style.color = '#6b7280';
-                emptyNotice.textContent = 'No supported proxies found';
+                emptyNotice.textContent = 'No supported proxies found in YAML (vless, vmess, ss, ssr, trojan, hysteria2)';
                 proxyGrid.appendChild(emptyNotice);
                 proxyListArea.classList.add('visible'); 
                 return; 
@@ -1092,7 +1128,10 @@
                 proxyGrid.appendChild(card);
             }
             proxyListArea.classList.add('visible'); 
-        } catch(e) { showToast('Error: '+e.message); } 
+        } catch(e) { 
+            showToast('Error: ' + e.message);
+            console.error(e);
+        } 
     };
 
     clearYamlBtn.onclick = () => { yamlTextarea.value = ''; proxyListArea.classList.remove('visible'); proxyGrid.innerHTML = ''; currentProxies = []; };
@@ -1104,7 +1143,14 @@
     const fileNameSpanYaml = document.getElementById('fileNameText');
     function handleYamlFile(file) { 
         const reader = new FileReader(); 
-        reader.onload = e => { yamlTextarea.value = e.target.result; uploadZoneYaml.classList.add('has-file'); fileNameSpanYaml.textContent = file.name; extractBtn.click(); }; 
+        reader.onload = e => { 
+            let content = e.target.result;
+            content = stripBOM(content);
+            yamlTextarea.value = content; 
+            uploadZoneYaml.classList.add('has-file'); 
+            fileNameSpanYaml.textContent = file.name; 
+            extractBtn.click(); 
+        }; 
         reader.readAsText(file); 
     }
     uploadZoneYaml.addEventListener('click', () => fileInputYaml.click());
