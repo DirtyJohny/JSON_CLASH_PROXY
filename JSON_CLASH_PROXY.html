@@ -1045,9 +1045,10 @@
     }
 
     function safeParseYAML(yamlText) {
-        // Сначала удаляем BOM
+        if (typeof jsyaml === 'undefined') {
+            throw new Error('YAML library (js-yaml) not loaded. Please check your internet connection and reload the page.');
+        }
         let cleanText = stripBOM(yamlText);
-        // Пробуем разные схемы
         try {
             return jsyaml.load(cleanText, { schema: jsyaml.DEFAULT_SCHEMA });
         } catch (e1) {
